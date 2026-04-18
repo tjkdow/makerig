@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>Dynamic Linkage Rig</title>
+    <title>Matrix Corrected Rig</title>
     <style>
         body { margin: 0; display: flex; height: 100vh; background: #111; color: #eee; font-family: -apple-system, sans-serif; overflow: hidden; }
         #sidebar { width: 260px; background: #1a1a1a; border-right: 1px solid #333; display: flex; flex-direction: column; z-index: 10; }
@@ -53,7 +53,6 @@
 
     let scene, camera, renderer, orbit, transform;
     let isDrawMode = false, lastJoint = null, selectedObj = null;
-    const SNAP_DIST = 1.2;
 
     init();
 
@@ -73,18 +72,14 @@
         orbit = new OrbitControls(camera, renderer.domElement);
         transform = new TransformControls(camera, renderer.domElement);
         
-        // --- THE ENGINE: Live Linkage Update ---
         transform.addEventListener('change', () => {
             if (transform.object && transform.object.userData.isJoint) {
-                updateParentBone(transform.object);
+                updateVisuals(transform.object);
             }
         });
 
         transform.addEventListener('dragging-changed', (e) => {
             orbit.enabled = !e.value;
-            if (!e.value && !isDrawMode && selectedObj?.userData.isJoint) {
-                trySnap(selectedObj);
-            }
         });
 
         scene.add(transform);
@@ -92,52 +87,24 @@
         animate();
     }
 
-    function updateParentBone(joint) {
+    // This ensures the bone and joint stay connected perfectly
+    function updateVisuals(joint) {
         const parent = joint.parent;
         if (!parent || !parent.userData.isJoint) return;
 
-        // 1. Get world position of the joint being moved
-        const targetPos = new THREE.Vector3().setFromMatrixPosition(joint.matrixWorld);
-        
-        // 2. Make the parent look at the joint's current world position
-        parent.lookAt(targetPos);
-        parent.rotateX(Math.PI / 2); // Re-align cylinder axis
+        // Force orientation: Parent looks at Child
+        const worldPos = new THREE.Vector3();
+        joint.getWorldPosition(worldPos);
+        parent.lookAt(worldPos);
+        parent.rotateX(Math.PI / 2);
 
-        // 3. Update the parent's bone scale to reach the joint
+        // Update Scale
         const dist = joint.position.length();
         parent.userData.bone.scale.set(1, dist, 1);
         
-        // 4. Force joint to stay on the local Y-axis of parent for perfect alignment
+        // Lock to axis
         joint.position.set(0, dist, 0);
-        joint.rotation.set(-Math.PI / 2, 0, 0);
-    }
-
-    function trySnap(dragged) {
-        let nearest = null;
-        let minDist = SNAP_DIST;
-        const dragPos = new THREE.Vector3().setFromMatrixPosition(dragged.matrixWorld);
-
-        scene.traverse((obj) => {
-            if (obj.userData.isJoint && obj !== dragged && !isChildOf(dragged, obj)) {
-                const objPos = new THREE.Vector3().setFromMatrixPosition(obj.matrixWorld);
-                const d = dragPos.distanceTo(objPos);
-                if (d < minDist) { minDist = d; nearest = obj; }
-            }
-        });
-
-        if (nearest) {
-            const worldPos = new THREE.Vector3().setFromMatrixPosition(dragged.matrixWorld);
-            nearest.add(dragged);
-            dragged.position.copy(nearest.worldToLocal(worldPos));
-            updateParentBone(dragged);
-            updateUI();
-        }
-    }
-
-    function isChildOf(p, c) {
-        let node = c.parent;
-        while (node) { if (node === p) return true; node = node.parent; }
-        return false;
+        joint.rotation.set(-Math.PI/2, 0, 0);
     }
 
     function onPointerDown(e) {
@@ -149,7 +116,9 @@
             
             let targetPos = new THREE.Vector3();
             if (lastJoint) {
-                const plane = new THREE.Plane().setFromNormalAndCoplanarPoint(camera.getWorldDirection(new THREE.Vector3()).negate(), lastJoint.getWorldPosition(new THREE.Vector3()));
+                const worldPos = new THREE.Vector3();
+                lastJoint.getWorldPosition(worldPos);
+                const plane = new THREE.Plane().setFromNormalAndCoplanarPoint(camera.getWorldDirection(new THREE.Vector3()).negate(), worldPos);
                 raycaster.ray.intersectPlane(plane, targetPos);
             } else {
                 targetPos = raycaster.ray.origin.clone().add(raycaster.ray.direction.clone().multiplyScalar(10));
@@ -173,7 +142,7 @@
         }
     }
 
-    function addNode(pos) {
+    function addNode(worldPos) {
         const group = new THREE.Group();
         group.userData = { isJoint: true, name: 'J_' + (Math.floor(Math.random()*1000)) };
         group.add(new THREE.Mesh(new THREE.SphereGeometry(0.15), new THREE.MeshStandardMaterial({color:0xffffff})));
@@ -185,14 +154,18 @@
         group.userData.bone = bMesh;
 
         if (!lastJoint) {
-            group.position.copy(pos);
+            group.position.copy(worldPos);
             scene.add(group);
         } else {
-            const worldPos = new THREE.Vector3().setFromMatrixPosition(lastJoint.matrixWorld);
-            const dist = worldPos.distanceTo(pos);
+            // THE FIX: Convert world position to parent's local space accurately
+            lastJoint.updateMatrixWorld();
+            const localPos = lastJoint.worldToLocal(worldPos.clone());
+            
             lastJoint.add(group);
-            group.position.set(0, dist, 0);
-            updateParentBone(group);
+            group.position.copy(localPos);
+            
+            // Sync visuals
+            updateVisuals(group);
         }
         lastJoint = group;
         updateUI();
