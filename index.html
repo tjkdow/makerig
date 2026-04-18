@@ -3,12 +3,13 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>Unified Rig Tool</title>
+    <title>Snap-Parent Rigging</title>
     <style>
         body { margin: 0; display: flex; height: 100vh; background: #111; color: #eee; font-family: -apple-system, sans-serif; overflow: hidden; }
-        #sidebar { width: 260px; background: #1a1a1a; border-right: 1px solid #333; display: flex; flex-direction: column; z-index: 10; }
+        #sidebar { width: 280px; background: #1a1a1a; border-right: 1px solid #333; display: flex; flex-direction: column; z-index: 10; }
         .panel { padding: 15px; border-bottom: 1px solid #333; }
         button { width: 100%; padding: 10px; margin: 4px 0; cursor: pointer; background: #2a2a2a; color: white; border: 1px solid #444; border-radius: 6px; font-weight: bold; }
+        button:hover { background: #333; }
         .active-mode { background: #3b82f6 !important; border-color: #fff; }
         
         #hierarchy-container { flex-grow: 1; overflow-y: auto; padding: 15px; }
@@ -16,38 +17,37 @@
         .tree-li { cursor: pointer; padding: 6px; font-size: 13px; border-radius: 4px; color: #ccc; }
         .tree-selected { background: #3b82f6 !important; color: white; }
 
-        input[type="range"] { width: 100%; margin: 8px 0; accent-color: #3b82f6; }
-        label { font-size: 11px; color: #888; text-transform: uppercase; letter-spacing: 0.5px; }
+        label { font-size: 11px; color: #888; text-transform: uppercase; }
         #viewer { flex-grow: 1; position: relative; }
+        #snap-toast { 
+            position: absolute; bottom: 20px; left: 50%; transform: translateX(-50%);
+            background: #3b82f6; color: white; padding: 10px 20px; border-radius: 20px;
+            font-size: 14px; font-weight: bold; display: none; pointer-events: none;
+        }
     </style>
 </head>
 <body>
 
 <div id="sidebar">
     <div class="panel">
-        <strong>Creation</strong>
-        <button id="drawBtn" onclick="toggleDrawMode()">Start Air Drawing</button>
+        <strong>Tools</strong>
+        <button id="drawBtn" onclick="toggleDrawMode()">Start Drawing</button>
         <div style="display: flex; gap: 4px;">
             <button id="moveBtn" onclick="setGizmo('translate')" class="active-mode">Move</button>
             <button id="rotBtn" onclick="setGizmo('rotate')">Rotate</button>
         </div>
-    </div>
-
-    <div id="prop-panel" class="panel" style="display:none;">
-        <strong>Bone Settings</strong><br>
-        <label>Thickness</label>
-        <input type="range" id="thickIn" min="0.05" max="1.5" step="0.01" oninput="updateBone()">
-        <label>Length</label>
-        <input type="range" id="lengthIn" min="0.1" max="10" step="0.1" oninput="updateBone()">
+        <button style="background:#631c1c" onclick="deleteSelected()">Delete</button>
     </div>
 
     <div id="hierarchy-container">
-        <strong>Bone Stack</strong>
+        <strong>Hierarchy</strong>
         <div id="tree-root"></div>
     </div>
 </div>
 
-<div id="viewer"></div>
+<div id="viewer">
+    <div id="snap-toast">Snapped to Parent!</div>
+</div>
 
 <script type="importmap">
     {
@@ -64,147 +64,156 @@
     import { TransformControls } from 'three/addons/controls/TransformControls.js';
 
     let scene, camera, renderer, orbit, transform;
-    let isDrawMode = false;
-    let lastBone = null;
-    let selectedBone = null;
+    let isDrawMode = false, lastBone = null, selectedObj = null;
+    const SNAP_THRESHOLD = 0.8; 
 
     init();
 
     function init() {
         scene = new THREE.Scene();
         scene.background = new THREE.Color(0x111111);
-        camera = new THREE.PerspectiveCamera(75, (window.innerWidth - 260) / window.innerHeight, 0.1, 1000);
+        camera = new THREE.PerspectiveCamera(75, (window.innerWidth - 280) / window.innerHeight, 0.1, 1000);
         camera.position.set(5, 5, 10);
 
         renderer = new THREE.WebGLRenderer({ antialias: true });
-        renderer.setSize(window.innerWidth - 260, window.innerHeight);
+        renderer.setSize(window.innerWidth - 280, window.innerHeight);
         document.getElementById('viewer').appendChild(renderer.domElement);
 
         scene.add(new THREE.GridHelper(20, 20, 0x222222, 0x222222));
-        scene.add(new THREE.AmbientLight(0x606060), new THREE.PointLight(0xffffff, 150).translateY(10));
+        scene.add(new THREE.AmbientLight(0x606060), new THREE.PointLight(0xffffff, 200).translateY(10));
 
         orbit = new OrbitControls(camera, renderer.domElement);
         transform = new TransformControls(camera, renderer.domElement);
-        transform.addEventListener('dragging-changed', (e) => orbit.enabled = !e.value);
-        scene.add(transform);
-
-        renderer.domElement.addEventListener('pointerdown', (e) => {
-            if (isDrawMode) { handleAirClick(e); return; }
-            
-            // Raycast for selection
-            const rect = renderer.domElement.getBoundingClientRect();
-            const mouse = new THREE.Vector2(
-                ((e.clientX - rect.left) / rect.width) * 2 - 1,
-                -((e.clientY - rect.top) / rect.height) * 2 + 1
-            );
-            const raycaster = new THREE.Raycaster();
-            raycaster.setFromCamera(mouse, camera);
-            const intersects = raycaster.intersectObjects(scene.children, true);
-            
-            if (intersects.length > 0) {
-                const hit = intersects.find(i => i.object.userData.isBone);
-                if (hit) selectBoneObj(hit.object);
+        
+        // --- SNAP LOGIC ---
+        transform.addEventListener('dragging-changed', (e) => {
+            orbit.enabled = !e.value;
+            // When user releases the joint, check for snap
+            if (!e.value && selectedObj && selectedObj.userData.isJoint) {
+                checkForSnap(selectedObj);
             }
         });
 
+        scene.add(transform);
+        renderer.domElement.addEventListener('pointerdown', onPointerDown);
         animate();
     }
 
-    window.setGizmo = (mode) => {
-        transform.setMode(mode);
-        document.getElementById('moveBtn').classList.toggle('active-mode', mode === 'translate');
-        document.getElementById('rotBtn').classList.toggle('active-mode', mode === 'rotate');
-    };
+    function checkForSnap(draggedJoint) {
+        let nearest = null;
+        let minDist = SNAP_THRESHOLD;
+        const dragPos = new THREE.Vector3();
+        draggedJoint.getWorldPosition(dragPos);
 
-    window.toggleDrawMode = () => {
-        isDrawMode = !isDrawMode;
-        orbit.enabled = !isDrawMode;
-        document.getElementById('drawBtn').innerText = isDrawMode ? "Finish" : "Start Drawing";
-        document.getElementById('drawBtn').classList.toggle('active-mode', isDrawMode);
-        if (isDrawMode) { lastBone = null; transform.detach(); }
+        scene.traverse((obj) => {
+            if (obj.userData.isJoint && obj !== draggedJoint && !isDescendant(draggedJoint, obj)) {
+                const objPos = new THREE.Vector3();
+                obj.getWorldPosition(objPos);
+                const d = dragPos.distanceTo(objPos);
+                if (d < minDist) {
+                    minDist = d;
+                    nearest = obj;
+                }
+            }
+        });
+
+        if (nearest) {
+            reparentJoint(draggedJoint, nearest);
+            showToast();
+        }
+    }
+
+    function isDescendant(parent, child) {
+        let node = child.parent;
+        while (node) {
+            if (node === parent) return true;
+            node = node.parent;
+        }
+        return false;
+    }
+
+    function reparentJoint(child, newParent) {
+        const worldPos = new THREE.Vector3();
+        child.getWorldPosition(worldPos);
+
+        // 1. Move in Hierarchy
+        newParent.add(child);
+        
+        // 2. Calculate Local Position relative to parent
+        const localPos = newParent.worldToLocal(worldPos);
+        child.position.copy(localPos);
+
+        // 3. Align Parent to point at Child to form the Bone
+        const targetPos = new THREE.Vector3();
+        child.getWorldPosition(targetPos);
+        
+        newParent.lookAt(targetPos);
+        newParent.rotateX(Math.PI / 2);
+
+        // 4. Update the visual bone of the parent
+        const dist = localPos.length();
+        const boneMesh = newParent.userData.bone;
+        if (boneMesh) {
+            boneMesh.scale.set(1, dist, 1);
+            child.position.set(0, dist, 0); // Snap to tip axis
+            child.rotation.x = -Math.PI / 2; // Keep children aligned
+        }
+
         updateUI();
-    };
+    }
 
-    function handleAirClick(e) {
+    function onPointerDown(e) {
+        if (isDrawMode) { handleAirClick(e); return; }
         const rect = renderer.domElement.getBoundingClientRect();
         const mouse = new THREE.Vector2(((e.clientX - rect.left) / rect.width) * 2 - 1, -((e.clientY - rect.top) / rect.height) * 2 + 1);
-        const vector = new THREE.Vector3(mouse.x, mouse.y, 0.5).unproject(camera);
-        const dir = vector.sub(camera.position).normalize();
-        const pos = camera.position.clone().add(dir.multiplyScalar(10));
-        addBone(pos);
+        const raycaster = new THREE.Raycaster();
+        raycaster.setFromCamera(mouse, camera);
+        const intersects = raycaster.intersectObjects(scene.children, true);
+        if (intersects.length > 0) {
+            const hit = intersects.find(i => i.object.userData.isBone || i.object.userData.isJoint);
+            if (hit) {
+                selectedObj = hit.object.userData.isBone ? hit.object.parent : hit.object;
+                transform.attach(selectedObj);
+                updateUI();
+            }
+        }
     }
 
     function addBone(pos) {
-        // The Bone Object is actually the pivot (Joint) with a Mesh inside it
-        const boneGroup = new THREE.Group(); 
-        boneGroup.userData.isBone = true;
-        boneGroup.userData.name = 'Bone_' + (scene.children.length);
+        const group = new THREE.Group();
+        group.userData.isJoint = true;
+        group.userData.name = 'Joint_' + (Math.floor(Math.random()*900)+100);
+        
+        const jMesh = new THREE.Mesh(new THREE.SphereGeometry(0.15), new THREE.MeshStandardMaterial({color: 0xffffff}));
+        group.add(jMesh);
 
-        // Visual Cylinder
-        const mesh = new THREE.Mesh(
-            new THREE.CylinderGeometry(0.1, 0.1, 1, 8), 
-            new THREE.MeshStandardMaterial({color: 0x3b82f6})
-        );
-        mesh.geometry.translate(0, 0.5, 0); // Offset so pivot is at base
-        boneGroup.add(mesh);
-        boneGroup.userData.mesh = mesh;
-
-        // Visual Joint (Small sphere at pivot)
-        const joint = new THREE.Mesh(new THREE.SphereGeometry(0.12), new THREE.MeshStandardMaterial({color: 0xffffff}));
-        boneGroup.add(joint);
+        const bMesh = new THREE.Mesh(new THREE.CylinderGeometry(0.08, 0.08, 1), new THREE.MeshStandardMaterial({color: 0x3b82f6}));
+        bMesh.geometry.translate(0, 0.5, 0);
+        bMesh.userData.isBone = true;
+        group.add(bMesh);
+        group.userData.bone = bMesh;
 
         if (!lastBone) {
-            boneGroup.position.copy(pos);
-            scene.add(boneGroup);
+            group.position.copy(pos);
+            scene.add(group);
         } else {
-            const start = new THREE.Vector3();
-            lastBone.getWorldPosition(start);
-            const dist = start.distanceTo(pos);
-
-            lastBone.lookAt(pos);
-            lastBone.rotateX(Math.PI / 2);
-            
-            // Set initial length
-            mesh.scale.set(1, dist, 1);
-            
-            boneGroup.position.y = dist;
-            lastBone.add(boneGroup);
-            boneGroup.rotation.x = -Math.PI / 2; // Reset for next bone
+            reparentJoint(group, lastBone);
         }
-        lastBone = boneGroup;
+        lastBone = group;
         updateUI();
     }
 
-    function selectBoneObj(obj) {
-        // If user clicked the mesh, we attach to the parent Group (the pivot)
-        selectedBone = obj.parent.userData.isBone ? obj.parent : obj;
-        transform.attach(selectedBone);
-        
-        document.getElementById('prop-panel').style.display = 'block';
-        const mesh = selectedBone.userData.mesh;
-        document.getElementById('thickIn').value = mesh.scale.x;
-        document.getElementById('lengthIn').value = mesh.scale.y;
-        updateUI();
+    function handleAirClick(e) {
+        const rect = renderer.domElement.getBoundingClientRect();
+        const vector = new THREE.Vector3(((e.clientX - rect.left) / rect.width) * 2 - 1, -((e.clientY - rect.top) / rect.height) * 2 + 1, 0.5).unproject(camera);
+        const dir = vector.sub(camera.position).normalize();
+        addBone(camera.position.clone().add(dir.multiplyScalar(10)));
     }
-
-    window.updateBone = () => {
-        if (!selectedBone) return;
-        const t = parseFloat(document.getElementById('thickIn').value);
-        const l = parseFloat(document.getElementById('lengthIn').value);
-        const mesh = selectedBone.userData.mesh;
-        
-        mesh.scale.set(t, l, t);
-        
-        // Move all children to the new tip
-        selectedBone.children.forEach(c => {
-            if (c.userData.isBone) c.position.y = l;
-        });
-    };
 
     function updateUI() {
         const root = document.getElementById('tree-root');
         root.innerHTML = '';
-        const roots = scene.children.filter(c => c.userData.isBone);
+        const roots = scene.children.filter(c => c.userData.isJoint);
         const ul = document.createElement('ul');
         ul.className = 'tree-ul';
         roots.forEach(r => ul.appendChild(buildTree(r)));
@@ -213,19 +222,31 @@
 
     function buildTree(obj) {
         const li = document.createElement('li');
-        li.className = 'tree-li' + (selectedBone === obj ? ' tree-selected' : '');
-        li.innerText = "🦴 " + obj.userData.name;
-        li.onclick = (e) => { e.stopPropagation(); selectBoneObj(obj); };
-        
-        const children = obj.children.filter(c => c.userData.isBone);
-        if (children.length > 0) {
-            const sub = document.createElement('ul');
-            sub.className = 'tree-ul';
-            children.forEach(c => sub.appendChild(buildTree(c)));
-            li.appendChild(sub);
-        }
+        li.className = 'tree-li' + (selectedObj === obj ? ' tree-selected' : '');
+        li.innerText = "📍 " + obj.userData.name;
+        li.onclick = (e) => { e.stopPropagation(); selectedObj = obj; transform.attach(obj); updateUI(); };
+        const sub = document.createElement('ul');
+        sub.className = 'tree-ul';
+        obj.children.filter(c => c.userData.isJoint).forEach(c => sub.appendChild(buildTree(c)));
+        if(sub.children.length > 0) li.appendChild(sub);
         return li;
     }
+
+    function showToast() {
+        const t = document.getElementById('snap-toast');
+        t.style.display = 'block';
+        setTimeout(() => t.style.display = 'none', 1500);
+    }
+
+    window.toggleDrawMode = () => {
+        isDrawMode = !isDrawMode;
+        orbit.enabled = !isDrawMode;
+        document.getElementById('drawBtn').classList.toggle('active-mode', isDrawMode);
+        if (isDrawMode) { lastBone = null; transform.detach(); }
+    };
+
+    window.setGizmo = (m) => transform.setMode(m);
+    window.deleteSelected = () => { if(selectedObj) { selectedObj.removeFromParent(); transform.detach(); updateUI(); } };
 
     function animate() { requestAnimationFrame(animate); renderer.render(scene, camera); }
 </script>
