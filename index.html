@@ -3,22 +3,21 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>Pro Rig Maker</title>
+    <title>Unified Rig Tool</title>
     <style>
         body { margin: 0; display: flex; height: 100vh; background: #111; color: #eee; font-family: -apple-system, sans-serif; overflow: hidden; }
-        #sidebar { width: 280px; background: #1a1a1a; border-right: 1px solid #333; display: flex; flex-direction: column; z-index: 10; }
+        #sidebar { width: 260px; background: #1a1a1a; border-right: 1px solid #333; display: flex; flex-direction: column; z-index: 10; }
         .panel { padding: 15px; border-bottom: 1px solid #333; }
         button { width: 100%; padding: 10px; margin: 4px 0; cursor: pointer; background: #2a2a2a; color: white; border: 1px solid #444; border-radius: 6px; font-weight: bold; }
         .active-mode { background: #3b82f6 !important; border-color: #fff; }
         
         #hierarchy-container { flex-grow: 1; overflow-y: auto; padding: 15px; }
-        .tree-ul { list-style: none; padding-left: 12px; margin: 5px 0; border-left: 1px solid #333; }
-        .tree-li { cursor: pointer; padding: 6px; font-size: 12px; border-radius: 4px; }
-        .tree-selected { background: #3b82f6 !important; }
+        .tree-ul { list-style: none; padding-left: 15px; margin: 5px 0; border-left: 1px solid #444; }
+        .tree-li { cursor: pointer; padding: 6px; font-size: 13px; border-radius: 4px; color: #ccc; }
+        .tree-selected { background: #3b82f6 !important; color: white; }
 
-        input[type="range"] { width: 100%; margin: 10px 0; }
-        label { font-size: 11px; color: #888; text-transform: uppercase; }
-
+        input[type="range"] { width: 100%; margin: 8px 0; accent-color: #3b82f6; }
+        label { font-size: 11px; color: #888; text-transform: uppercase; letter-spacing: 0.5px; }
         #viewer { flex-grow: 1; position: relative; }
     </style>
 </head>
@@ -26,8 +25,8 @@
 
 <div id="sidebar">
     <div class="panel">
-        <strong>Tools</strong>
-        <button id="drawBtn" onclick="toggleDrawMode()">Start Drawing</button>
+        <strong>Creation</strong>
+        <button id="drawBtn" onclick="toggleDrawMode()">Start Air Drawing</button>
         <div style="display: flex; gap: 4px;">
             <button id="moveBtn" onclick="setGizmo('translate')" class="active-mode">Move</button>
             <button id="rotBtn" onclick="setGizmo('rotate')">Rotate</button>
@@ -35,15 +34,15 @@
     </div>
 
     <div id="prop-panel" class="panel" style="display:none;">
-        <strong>Bone Properties</strong><br>
+        <strong>Bone Settings</strong><br>
         <label>Thickness</label>
-        <input type="range" id="thickIn" min="0.01" max="0.5" step="0.01" oninput="updateBoneScale()">
+        <input type="range" id="thickIn" min="0.05" max="1.5" step="0.01" oninput="updateBone()">
         <label>Length</label>
-        <input type="range" id="lengthIn" min="0.1" max="10" step="0.1" oninput="updateBoneScale()">
+        <input type="range" id="lengthIn" min="0.1" max="10" step="0.1" oninput="updateBone()">
     </div>
 
     <div id="hierarchy-container">
-        <strong>Hierarchy</strong>
+        <strong>Bone Stack</strong>
         <div id="tree-root"></div>
     </div>
 </div>
@@ -66,54 +65,46 @@
 
     let scene, camera, renderer, orbit, transform;
     let isDrawMode = false;
-    let lastJoint = null;
-    let selectedObj = null;
+    let lastBone = null;
+    let selectedBone = null;
 
     init();
 
     function init() {
         scene = new THREE.Scene();
         scene.background = new THREE.Color(0x111111);
-        camera = new THREE.PerspectiveCamera(75, (window.innerWidth - 280) / window.innerHeight, 0.1, 1000);
+        camera = new THREE.PerspectiveCamera(75, (window.innerWidth - 260) / window.innerHeight, 0.1, 1000);
         camera.position.set(5, 5, 10);
 
         renderer = new THREE.WebGLRenderer({ antialias: true });
-        renderer.setSize(window.innerWidth - 280, window.innerHeight);
+        renderer.setSize(window.innerWidth - 260, window.innerHeight);
         document.getElementById('viewer').appendChild(renderer.domElement);
 
         scene.add(new THREE.GridHelper(20, 20, 0x222222, 0x222222));
-        scene.add(new THREE.AmbientLight(0x606060), new THREE.PointLight(0xffffff, 100, 50).translateY(10));
+        scene.add(new THREE.AmbientLight(0x606060), new THREE.PointLight(0xffffff, 150).translateY(10));
 
         orbit = new OrbitControls(camera, renderer.domElement);
         transform = new TransformControls(camera, renderer.domElement);
         transform.addEventListener('dragging-changed', (e) => orbit.enabled = !e.value);
         scene.add(transform);
 
-        // Click to Select in 3D
-        const raycaster = new THREE.Raycaster();
-        const mouse = new THREE.Vector2();
-
         renderer.domElement.addEventListener('pointerdown', (e) => {
-            if (isDrawMode) {
-                handleAirClick(e);
-                return;
-            }
+            if (isDrawMode) { handleAirClick(e); return; }
+            
             // Raycast for selection
             const rect = renderer.domElement.getBoundingClientRect();
-            mouse.x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
-            mouse.y = -((e.clientY - rect.top) / rect.height) * 2 + 1;
+            const mouse = new THREE.Vector2(
+                ((e.clientX - rect.left) / rect.width) * 2 - 1,
+                -((e.clientY - rect.top) / rect.height) * 2 + 1
+            );
+            const raycaster = new THREE.Raycaster();
             raycaster.setFromCamera(mouse, camera);
             const intersects = raycaster.intersectObjects(scene.children, true);
             
             if (intersects.length > 0) {
-                const hit = intersects.find(i => i.object.userData.type);
-                if (hit) selectObject(hit.object);
+                const hit = intersects.find(i => i.object.userData.isBone);
+                if (hit) selectBoneObj(hit.object);
             }
-        });
-
-        window.addEventListener('keydown', (e) => {
-            if (e.key === 'w') setGizmo('translate');
-            if (e.key === 'e') setGizmo('rotate');
         });
 
         animate();
@@ -128,75 +119,92 @@
     window.toggleDrawMode = () => {
         isDrawMode = !isDrawMode;
         orbit.enabled = !isDrawMode;
-        document.getElementById('drawBtn').innerText = isDrawMode ? "Done" : "Start Drawing";
+        document.getElementById('drawBtn').innerText = isDrawMode ? "Finish" : "Start Drawing";
         document.getElementById('drawBtn').classList.toggle('active-mode', isDrawMode);
-        if (isDrawMode) { lastJoint = null; transform.detach(); }
+        if (isDrawMode) { lastBone = null; transform.detach(); }
+        updateUI();
     };
 
     function handleAirClick(e) {
         const rect = renderer.domElement.getBoundingClientRect();
-        const x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
-        const y = -((e.clientY - rect.top) / rect.height) * 2 + 1;
-        const vector = new THREE.Vector3(x, y, 0.5).unproject(camera);
+        const mouse = new THREE.Vector2(((e.clientX - rect.left) / rect.width) * 2 - 1, -((e.clientY - rect.top) / rect.height) * 2 + 1);
+        const vector = new THREE.Vector3(mouse.x, mouse.y, 0.5).unproject(camera);
         const dir = vector.sub(camera.position).normalize();
         const pos = camera.position.clone().add(dir.multiplyScalar(10));
-        addNode(pos);
+        addBone(pos);
     }
 
-    function addNode(pos) {
-        const joint = new THREE.Mesh(new THREE.SphereGeometry(0.15), new THREE.MeshStandardMaterial({color: 0xffffff}));
-        joint.userData.type = 'joint';
-        joint.userData.name = 'Joint';
+    function addBone(pos) {
+        // The Bone Object is actually the pivot (Joint) with a Mesh inside it
+        const boneGroup = new THREE.Group(); 
+        boneGroup.userData.isBone = true;
+        boneGroup.userData.name = 'Bone_' + (scene.children.length);
 
-        if (!lastJoint) {
-            joint.position.copy(pos);
-            scene.add(joint);
+        // Visual Cylinder
+        const mesh = new THREE.Mesh(
+            new THREE.CylinderGeometry(0.1, 0.1, 1, 8), 
+            new THREE.MeshStandardMaterial({color: 0x3b82f6})
+        );
+        mesh.geometry.translate(0, 0.5, 0); // Offset so pivot is at base
+        boneGroup.add(mesh);
+        boneGroup.userData.mesh = mesh;
+
+        // Visual Joint (Small sphere at pivot)
+        const joint = new THREE.Mesh(new THREE.SphereGeometry(0.12), new THREE.MeshStandardMaterial({color: 0xffffff}));
+        boneGroup.add(joint);
+
+        if (!lastBone) {
+            boneGroup.position.copy(pos);
+            scene.add(boneGroup);
         } else {
-            const startPos = new THREE.Vector3();
-            lastJoint.getWorldPosition(startPos);
-            const dist = startPos.distanceTo(pos);
+            const start = new THREE.Vector3();
+            lastBone.getWorldPosition(start);
+            const dist = start.distanceTo(pos);
 
-            const bone = new THREE.Mesh(new THREE.CylinderGeometry(0.06, 0.06, 1), new THREE.MeshStandardMaterial({color: 0x3b82f6}));
-            bone.geometry.translate(0, 0.5, 0); // Local origin at base
-            bone.scale.set(1, dist, 1);
-            bone.userData.type = 'bone';
-            bone.userData.name = 'Bone';
-            bone.userData.baseLen = 1;
-
-            lastJoint.add(bone);
-            lastJoint.lookAt(pos);
-            lastJoint.rotateX(Math.PI / 2);
-            bone.add(joint);
-            joint.position.y = 1; // Relative to scaled bone
-            joint.rotation.x = -Math.PI / 2;
+            lastBone.lookAt(pos);
+            lastBone.rotateX(Math.PI / 2);
+            
+            // Set initial length
+            mesh.scale.set(1, dist, 1);
+            
+            boneGroup.position.y = dist;
+            lastBone.add(boneGroup);
+            boneGroup.rotation.x = -Math.PI / 2; // Reset for next bone
         }
-        lastJoint = joint;
+        lastBone = boneGroup;
         updateUI();
     }
 
-    function selectObject(obj) {
-        selectedObj = obj;
-        transform.attach(obj);
-        const isBone = obj.userData.type === 'bone';
-        document.getElementById('prop-panel').style.display = isBone ? 'block' : 'none';
-        if (isBone) {
-            document.getElementById('thickIn').value = obj.scale.x / 10;
-            document.getElementById('lengthIn').value = obj.scale.y;
-        }
+    function selectBoneObj(obj) {
+        // If user clicked the mesh, we attach to the parent Group (the pivot)
+        selectedBone = obj.parent.userData.isBone ? obj.parent : obj;
+        transform.attach(selectedBone);
+        
+        document.getElementById('prop-panel').style.display = 'block';
+        const mesh = selectedBone.userData.mesh;
+        document.getElementById('thickIn').value = mesh.scale.x;
+        document.getElementById('lengthIn').value = mesh.scale.y;
         updateUI();
     }
 
-    window.updateBoneScale = () => {
-        if (!selectedObj || selectedObj.userData.type !== 'bone') return;
-        const t = parseFloat(document.getElementById('thickIn').value) * 10;
+    window.updateBone = () => {
+        if (!selectedBone) return;
+        const t = parseFloat(document.getElementById('thickIn').value);
         const l = parseFloat(document.getElementById('lengthIn').value);
-        selectedObj.scale.set(t, l, t);
+        const mesh = selectedBone.userData.mesh;
+        
+        mesh.scale.set(t, l, t);
+        
+        // Move all children to the new tip
+        selectedBone.children.forEach(c => {
+            if (c.userData.isBone) c.position.y = l;
+        });
     };
 
     function updateUI() {
         const root = document.getElementById('tree-root');
         root.innerHTML = '';
-        const roots = scene.children.filter(c => c.userData.type === 'joint');
+        const roots = scene.children.filter(c => c.userData.isBone);
         const ul = document.createElement('ul');
         ul.className = 'tree-ul';
         roots.forEach(r => ul.appendChild(buildTree(r)));
@@ -205,13 +213,15 @@
 
     function buildTree(obj) {
         const li = document.createElement('li');
-        li.className = 'tree-li' + (selectedObj === obj ? ' tree-selected' : '');
-        li.innerText = (obj.userData.type === 'joint' ? "⚪ " : "🦴 ") + obj.userData.name;
-        li.onclick = (e) => { e.stopPropagation(); selectObject(obj); };
-        if (obj.children.length > 0) {
+        li.className = 'tree-li' + (selectedBone === obj ? ' tree-selected' : '');
+        li.innerText = "🦴 " + obj.userData.name;
+        li.onclick = (e) => { e.stopPropagation(); selectBoneObj(obj); };
+        
+        const children = obj.children.filter(c => c.userData.isBone);
+        if (children.length > 0) {
             const sub = document.createElement('ul');
             sub.className = 'tree-ul';
-            obj.children.filter(c => c.userData.type).forEach(c => sub.appendChild(buildTree(c)));
+            children.forEach(c => sub.appendChild(buildTree(c)));
             li.appendChild(sub);
         }
         return li;
