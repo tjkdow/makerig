@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>Matrix Corrected Rig</title>
+    <title>Localized Linkage Rig</title>
     <style>
         body { margin: 0; display: flex; height: 100vh; background: #111; color: #eee; font-family: -apple-system, sans-serif; overflow: hidden; }
         #sidebar { width: 260px; background: #1a1a1a; border-right: 1px solid #333; display: flex; flex-direction: column; z-index: 10; }
@@ -30,7 +30,7 @@
         <button style="background:#4b1a1a" onclick="deleteSelected()">Delete</button>
     </div>
     <div id="hierarchy-container">
-        <strong>Rig Stack</strong>
+        <strong>Rig Hierarchy</strong>
         <div id="tree-root"></div>
     </div>
 </div>
@@ -53,6 +53,7 @@
 
     let scene, camera, renderer, orbit, transform;
     let isDrawMode = false, lastJoint = null, selectedObj = null;
+    let selectionGroup = new THREE.Group();
 
     init();
 
@@ -71,15 +72,25 @@
 
         orbit = new OrbitControls(camera, renderer.domElement);
         transform = new TransformControls(camera, renderer.domElement);
+        scene.add(selectionGroup);
         
+        // --- REAL-TIME LINKAGE REPAIR ---
         transform.addEventListener('change', () => {
-            if (transform.object && transform.object.userData.isJoint) {
-                updateVisuals(transform.object);
+            if (!transform.object) return;
+            
+            // If we are moving a group (Bone + 2 Joints), update their visuals
+            if (transform.object === selectionGroup) {
+                selectionGroup.children.forEach(obj => {
+                    if (obj.userData.isJoint) syncAllConnectedBones(obj);
+                });
+            } else if (transform.object.userData.isJoint) {
+                syncAllConnectedBones(transform.object);
             }
         });
 
         transform.addEventListener('dragging-changed', (e) => {
             orbit.enabled = !e.value;
+            if (!e.value) finalizeGroupMovement();
         });
 
         scene.add(transform);
@@ -87,24 +98,69 @@
         animate();
     }
 
-    // This ensures the bone and joint stay connected perfectly
-    function updateVisuals(joint) {
-        const parent = joint.parent;
-        if (!parent || !parent.userData.isJoint) return;
+    function syncAllConnectedBones(joint) {
+        // Update bone connecting to parent
+        if (joint.parent && joint.parent.userData.isJoint) {
+            updateBoneVisual(joint.parent, joint);
+        }
+        // Update bones connecting to children
+        joint.children.forEach(child => {
+            if (child.userData.isJoint) updateBoneVisual(joint, child);
+        });
+    }
 
-        // Force orientation: Parent looks at Child
-        const worldPos = new THREE.Vector3();
-        joint.getWorldPosition(worldPos);
-        parent.lookAt(worldPos);
+    function updateBoneVisual(parent, child) {
+        const pPos = new THREE.Vector3().setFromMatrixPosition(parent.matrixWorld);
+        const cPos = new THREE.Vector3().setFromMatrixPosition(child.matrixWorld);
+        const dist = pPos.distanceTo(cPos);
+
+        parent.lookAt(cPos);
         parent.rotateX(Math.PI / 2);
-
-        // Update Scale
-        const dist = joint.position.length();
         parent.userData.bone.scale.set(1, dist, 1);
-        
-        // Lock to axis
-        joint.position.set(0, dist, 0);
-        joint.rotation.set(-Math.PI/2, 0, 0);
+    }
+
+    function selectObject(obj) {
+        // Clear previous group
+        finalizeGroupMovement();
+        selectedObj = obj;
+
+        if (obj.userData.isBone) {
+            // Select Bone + Parent Joint + Child Joint
+            const bone = obj;
+            const parentJoint = obj.parent;
+            const childJoint = parentJoint.children.find(c => c.userData.isJoint); // Simplified for single chain
+
+            addToSelectionGroup([parentJoint, childJoint]);
+            transform.attach(selectionGroup);
+        } else {
+            transform.attach(obj);
+        }
+        updateUI();
+    }
+
+    function addToSelectionGroup(objs) {
+        const center = new THREE.Vector3();
+        objs.forEach(o => center.add(o.getWorldPosition(new THREE.Vector3())));
+        center.divideScalar(objs.length);
+
+        selectionGroup.position.copy(center);
+        objs.forEach(o => {
+            const worldPos = o.getWorldPosition(new THREE.Vector3());
+            const worldQuat = o.getWorldQuaternion(new THREE.Quaternion());
+            scene.attach(o); // Detach from rig temporarily
+            selectionGroup.attach(o);
+        });
+    }
+
+    function finalizeGroupMovement() {
+        const children = [...selectionGroup.children];
+        children.forEach(o => {
+            scene.attach(o); // Bring back to scene to find original parents
+            // Re-nest based on original logic (simplified: this would need a persistent ID system for complex rigs)
+            // For now, we just keep them in scene and sync visuals
+            syncAllConnectedBones(o);
+        });
+        transform.detach();
     }
 
     function onPointerDown(e) {
@@ -113,12 +169,9 @@
             const mouse = new THREE.Vector2(((e.clientX - rect.left) / rect.width) * 2 - 1, -((e.clientY - rect.top) / rect.height) * 2 + 1);
             const raycaster = new THREE.Raycaster();
             raycaster.setFromCamera(mouse, camera);
-            
             let targetPos = new THREE.Vector3();
             if (lastJoint) {
-                const worldPos = new THREE.Vector3();
-                lastJoint.getWorldPosition(worldPos);
-                const plane = new THREE.Plane().setFromNormalAndCoplanarPoint(camera.getWorldDirection(new THREE.Vector3()).negate(), worldPos);
+                const plane = new THREE.Plane().setFromNormalAndCoplanarPoint(camera.getWorldDirection(new THREE.Vector3()).negate(), lastJoint.getWorldPosition(new THREE.Vector3()));
                 raycaster.ray.intersectPlane(plane, targetPos);
             } else {
                 targetPos = raycaster.ray.origin.clone().add(raycaster.ray.direction.clone().multiplyScalar(10));
@@ -133,11 +186,10 @@
         ray.setFromCamera(mouse, camera);
         const hits = ray.intersectObjects(scene.children, true);
         if (hits.length > 0) {
-            const hit = hits.find(h => h.object.userData.isBone || h.object.parent.userData.isJoint);
+            const hit = hits.find(h => h.object.userData.isBone || h.object.userData.isJoint || h.object.parent?.userData.isJoint);
             if (hit) {
-                selectedObj = hit.object.userData.isBone ? hit.object.parent : hit.object;
-                transform.attach(selectedObj);
-                updateUI();
+                const target = hit.object.userData.isBone ? hit.object : (hit.object.userData.isJoint ? hit.object : hit.object.parent);
+                selectObject(target);
             }
         }
     }
@@ -145,7 +197,9 @@
     function addNode(worldPos) {
         const group = new THREE.Group();
         group.userData = { isJoint: true, name: 'J_' + (Math.floor(Math.random()*1000)) };
-        group.add(new THREE.Mesh(new THREE.SphereGeometry(0.15), new THREE.MeshStandardMaterial({color:0xffffff})));
+        const jMesh = new THREE.Mesh(new THREE.SphereGeometry(0.15), new THREE.MeshStandardMaterial({color:0xffffff}));
+        jMesh.userData.isJoint = true;
+        group.add(jMesh);
         
         const bMesh = new THREE.Mesh(new THREE.CylinderGeometry(0.08, 0.08, 1), new THREE.MeshStandardMaterial({color:0x3b82f6}));
         bMesh.geometry.translate(0, 0.5, 0);
@@ -153,19 +207,13 @@
         group.add(bMesh);
         group.userData.bone = bMesh;
 
-        if (!lastJoint) {
-            group.position.copy(worldPos);
-            scene.add(group);
-        } else {
-            // THE FIX: Convert world position to parent's local space accurately
-            lastJoint.updateMatrixWorld();
-            const localPos = lastJoint.worldToLocal(worldPos.clone());
-            
+        group.position.copy(worldPos);
+        scene.add(group);
+
+        if (lastJoint) {
             lastJoint.add(group);
-            group.position.copy(localPos);
-            
-            // Sync visuals
-            updateVisuals(group);
+            group.position.copy(lastJoint.worldToLocal(worldPos.clone()));
+            updateBoneVisual(lastJoint, group);
         }
         lastJoint = group;
         updateUI();
@@ -174,18 +222,19 @@
     function updateUI() {
         const root = document.getElementById('tree-root');
         root.innerHTML = '';
-        const roots = scene.children.filter(c => c.userData.isJoint);
-        const ul = document.createElement('ul');
-        ul.className = 'tree-ul';
-        roots.forEach(r => ul.appendChild(buildTree(r)));
-        root.appendChild(ul);
+        scene.children.filter(c => c.userData.isJoint && c.parent === scene).forEach(r => {
+            const ul = document.createElement('ul');
+            ul.className = 'tree-ul';
+            ul.appendChild(buildTree(r));
+            root.appendChild(ul);
+        });
     }
 
     function buildTree(obj) {
         const li = document.createElement('li');
         li.className = 'tree-li' + (selectedObj === obj ? ' tree-selected' : '');
         li.innerText = "📍 " + obj.userData.name;
-        li.onclick = (e) => { e.stopPropagation(); selectedObj = obj; transform.attach(obj); updateUI(); };
+        li.onclick = (e) => { e.stopPropagation(); selectObject(obj); };
         const sub = document.createElement('ul');
         sub.className = 'tree-ul';
         obj.children.filter(c => c.userData.isJoint).forEach(c => sub.appendChild(buildTree(c)));
