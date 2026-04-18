@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>Zero-G Air Rig</title>
+    <title>Fixed Linkage Rig</title>
     <style>
         body { margin: 0; display: flex; height: 100vh; background: #111; color: #eee; font-family: -apple-system, sans-serif; overflow: hidden; }
         #sidebar { width: 260px; background: #1a1a1a; border-right: 1px solid #333; display: flex; flex-direction: column; z-index: 10; }
@@ -53,6 +53,7 @@
 
     let scene, camera, renderer, orbit, transform;
     let isDrawMode = false, lastJoint = null, selectedObj = null;
+    const SNAP_DIST = 1.0;
 
     init();
 
@@ -72,41 +73,81 @@
         orbit = new OrbitControls(camera, renderer.domElement);
         transform = new TransformControls(camera, renderer.domElement);
         
-        // --- REAL-TIME TRACKING ---
+        // --- THE ENGINE ---
         transform.addEventListener('change', () => {
             if (transform.object && transform.object.userData.isJoint) {
-                syncBoneToChild(transform.object);
-                // Also update parent bone if we are moving a child
-                if (transform.object.parent && transform.object.parent.userData.isJoint) {
-                    syncBoneToChild(transform.object.parent);
+                const joint = transform.object;
+                
+                // 1. Update the bone connecting to parent
+                if (joint.parent && joint.parent.userData.isJoint) {
+                    syncBone(joint.parent, joint);
                 }
+                
+                // 2. Update bones connecting to children
+                joint.children.forEach(child => {
+                    if (child.userData.isJoint) syncBone(joint, child);
+                });
             }
         });
 
-        transform.addEventListener('dragging-changed', (e) => orbit.enabled = !e.value);
+        transform.addEventListener('dragging-changed', (e) => {
+            orbit.enabled = !e.value;
+            if (!e.value && !isDrawMode && selectedObj?.userData.isJoint) {
+                trySnap(selectedObj);
+            }
+        });
+
         scene.add(transform);
         renderer.domElement.addEventListener('pointerdown', onPointerDown);
         animate();
     }
 
-    function syncBoneToChild(parent) {
-        const child = parent.children.find(c => c.userData.isJoint);
-        if (!child) return;
+    function syncBone(parent, child) {
+        parent.updateMatrixWorld();
+        child.updateMatrixWorld();
 
-        const worldPos = new THREE.Vector3();
-        child.getWorldPosition(worldPos);
+        const pPos = new THREE.Vector3().setFromMatrixPosition(parent.matrixWorld);
+        const cPos = new THREE.Vector3().setFromMatrixPosition(child.matrixWorld);
         
-        // Make parent look at child's current world position
-        parent.lookAt(worldPos);
+        // Rotate parent to face child
+        parent.lookAt(cPos);
         parent.rotateX(Math.PI / 2);
 
-        // Resize bone
-        const dist = child.position.length();
+        // Update bone length
+        const dist = pPos.distanceTo(cPos);
         parent.userData.bone.scale.set(1, dist, 1);
         
-        // Ensure child stays on axis
+        // Correct child's local position to be exactly at the tip of the bone
         child.position.set(0, dist, 0);
         child.rotation.set(-Math.PI/2, 0, 0);
+    }
+
+    function trySnap(dragged) {
+        let nearest = null;
+        let minDist = SNAP_DIST;
+        const dragPos = new THREE.Vector3().setFromMatrixPosition(dragged.matrixWorld);
+
+        scene.traverse((obj) => {
+            if (obj.userData.isJoint && obj !== dragged && !isChildOf(dragged, obj)) {
+                const objPos = new THREE.Vector3().setFromMatrixPosition(obj.matrixWorld);
+                const d = dragPos.distanceTo(objPos);
+                if (d < minDist) { minDist = d; nearest = obj; }
+            }
+        });
+
+        if (nearest) {
+            const worldPos = new THREE.Vector3().setFromMatrixPosition(dragged.matrixWorld);
+            nearest.add(dragged);
+            dragged.position.copy(nearest.worldToLocal(worldPos));
+            syncBone(nearest, dragged);
+            updateUI();
+        }
+    }
+
+    function isChildOf(p, c) {
+        let node = c.parent;
+        while (node) { if (node === p) return true; node = node.parent; }
+        return false;
     }
 
     function onPointerDown(e) {
@@ -159,15 +200,10 @@
             group.position.copy(worldPos);
             scene.add(group);
         } else {
-            // Convert clicked world coordinate to parent's local space
             lastJoint.updateMatrixWorld();
-            const localPos = lastJoint.worldToLocal(worldPos.clone());
-            
+            group.position.copy(lastJoint.worldToLocal(worldPos.clone()));
             lastJoint.add(group);
-            group.position.copy(localPos);
-            
-            // Re-sync parent to point at this new local point
-            syncBoneToChild(lastJoint);
+            syncBone(lastJoint, group);
         }
         lastJoint = group;
         updateUI();
@@ -205,7 +241,16 @@
     };
 
     window.setGizmo = (m) => transform.setMode(m);
-    window.deleteSelected = () => { if(selectedObj) { selectedObj.removeFromParent(); transform.detach(); updateUI(); } };
+    window.deleteSelected = () => { 
+        if(selectedObj) { 
+            const parent = selectedObj.parent;
+            selectedObj.removeFromParent(); 
+            transform.detach(); 
+            updateUI(); 
+            // Reset parent bone if it has no child anymore
+            if (parent && parent.userData.bone) parent.userData.bone.scale.set(1, 0.01, 1);
+        } 
+    };
     function animate() { requestAnimationFrame(animate); renderer.render(scene, camera); }
 </script>
 </body>
