@@ -2,15 +2,17 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <title>Flat-Link Snap Rig</title>
+    <title>Adjustable Snap Rig</title>
     <style>
         body { margin: 0; display: flex; height: 100vh; background: #111; color: #eee; font-family: sans-serif; overflow: hidden; }
-        #sidebar { width: 260px; background: #1a1a1a; border-right: 1px solid #333; padding: 15px; z-index: 10; }
+        #sidebar { width: 260px; background: #1a1a1a; border-right: 1px solid #333; padding: 15px; z-index: 10; display: flex; flex-direction: column; }
         button { width: 100%; padding: 10px; margin: 5px 0; cursor: pointer; background: #2a2a2a; color: white; border: 1px solid #444; border-radius: 4px; font-weight: bold; }
         .active { background: #3b82f6 !important; border-color: #fff; }
-        .snap-on { color: #4ade80; border-color: #4ade80; }
+        .control-group { margin: 15px 0; padding: 10px; background: #222; border-radius: 6px; }
+        label { display: block; font-size: 12px; margin-bottom: 8px; color: #aaa; }
+        input[type="range"] { width: 100%; cursor: pointer; }
         #viewer { flex-grow: 1; position: relative; }
-        .hint { font-size: 11px; color: #888; margin-top: 20px; line-height: 1.4; }
+        .hint { font-size: 11px; color: #888; margin-top: auto; line-height: 1.4; padding-top: 20px;}
     </style>
 </head>
 <body>
@@ -18,14 +20,19 @@
 <div id="sidebar">
     <h3>Rig Controller</h3>
     <button id="drawBtn" onclick="toggleDraw()">Start Drawing</button>
-    <button id="snapBtn" onclick="toggleSnap()" class="snap-on">Snap: ON</button>
+    
+    <div class="control-group">
+        <label>Snap Intensity: <span id="snapVal">0.6</span></label>
+        <input type="range" id="snapSlider" min="0.1" max="2.0" step="0.1" value="0.6" oninput="updateSnapDist(this.value)">
+        <button id="snapBtn" onclick="toggleSnap()" style="margin-top:10px; font-size:11px;" class="active">Snap: ON</button>
+    </div>
+
     <button id="moveBtn" onclick="setMode('translate')" class="active">Move Joints</button>
     <button style="background:#4b1a1a" onclick="deleteJoint()">Delete Selected</button>
     
     <div class="hint">
-        • <b>Snap</b>: Release a joint near another to merge their positions.<br>
-        • <b>Bones</b>: Clicking a bone selects its start joint.<br>
-        • <b>Flat Logic</b>: Moving one joint stretches the bone without moving the neighbor.
+        • <b>High Snap</b>: Better for joining disconnected limbs.<br>
+        • <b>Low Snap</b>: Better for fine-tuning joint placement.
     </div>
 </div>
 <div id="viewer"></div>
@@ -46,7 +53,7 @@
 
     let scene, camera, renderer, orbit, transform;
     let isDrawing = false, isSnapEnabled = true, lastJoint = null, selectedJoint = null;
-    const SNAP_THRESHOLD = 0.6; 
+    let snapThreshold = 0.6; 
 
     init();
 
@@ -66,12 +73,9 @@
         orbit = new OrbitControls(camera, renderer.domElement);
         transform = new TransformControls(camera, renderer.domElement);
         
-        // --- LIVE BONE UPDATE ---
         transform.addEventListener('change', updateAllBones);
-
         transform.addEventListener('dragging-changed', (e) => {
             orbit.enabled = !e.value;
-            // When dragging stops, try to snap
             if (!e.value && isSnapEnabled && selectedJoint) {
                 trySnap(selectedJoint);
             }
@@ -79,12 +83,26 @@
 
         scene.add(transform);
         renderer.domElement.addEventListener('pointerdown', onPointerDown);
+        
+        // Expose functions to window for UI
+        window.updateSnapDist = (val) => {
+            snapThreshold = parseFloat(val);
+            document.getElementById('snapVal').innerText = val;
+        };
+        
+        window.toggleSnap = () => {
+            isSnapEnabled = !isSnapEnabled;
+            const btn = document.getElementById('snapBtn');
+            btn.innerText = isSnapEnabled ? "Snap: ON" : "Snap: OFF";
+            btn.classList.toggle('active', isSnapEnabled);
+        };
+
         animate();
     }
 
     function trySnap(dragged) {
         let nearest = null;
-        let minDist = SNAP_THRESHOLD;
+        let minDist = snapThreshold;
 
         scene.traverse(obj => {
             if (obj.userData.isJoint && obj !== dragged) {
@@ -97,12 +115,8 @@
         });
 
         if (nearest) {
-            // Hard snap the position
             dragged.position.copy(nearest.position);
             updateAllBones();
-            
-            // Visual feedback: brief flash or log
-            console.log("Snapped to " + nearest.uuid);
         }
     }
 
@@ -190,16 +204,7 @@
         document.getElementById('drawBtn').classList.toggle('active', isDrawing);
     };
 
-    window.toggleSnap = () => {
-        isSnapEnabled = !isSnapEnabled;
-        const btn = document.getElementById('snapBtn');
-        btn.innerText = isSnapEnabled ? "Snap: ON" : "Snap: OFF";
-        btn.classList.toggle('snap-on', isSnapEnabled);
-    };
-
-    window.setMode = (m) => {
-        transform.setMode(m);
-    };
+    window.setMode = (m) => transform.setMode(m);
 
     window.deleteJoint = () => {
         if (!selectedJoint) return;
