@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>Controlled Snap Rigging</title>
+    <title>Fluid Air Rig</title>
     <style>
         body { margin: 0; display: flex; height: 100vh; background: #111; color: #eee; font-family: -apple-system, sans-serif; overflow: hidden; }
         #sidebar { width: 260px; background: #1a1a1a; border-right: 1px solid #333; display: flex; flex-direction: column; z-index: 10; }
@@ -15,7 +15,6 @@
         .tree-li { cursor: pointer; padding: 6px; font-size: 13px; border-radius: 4px; color: #ccc; }
         .tree-selected { background: #3b82f6 !important; color: white; }
         #viewer { flex-grow: 1; position: relative; }
-        #toast { position: absolute; bottom: 20px; left: 50%; transform: translateX(-50%); background: #3b82f6; color: white; padding: 8px 16px; border-radius: 20px; font-size: 13px; display: none; }
     </style>
 </head>
 <body>
@@ -24,7 +23,7 @@
     <div class="panel">
         <strong>Workflow</strong>
         <button id="drawBtn" onclick="toggleDrawMode()">Start Drawing</button>
-        <div style="display: flex; gap: 4px;">
+        <div style="gap: 4px; display: flex;">
             <button id="moveBtn" onclick="setGizmo('translate')" class="active-mode">Move</button>
             <button id="rotBtn" onclick="setGizmo('rotate')">Rotate</button>
         </div>
@@ -36,9 +35,7 @@
     </div>
 </div>
 
-<div id="viewer">
-    <div id="toast">Linked to nearest joint</div>
-</div>
+<div id="viewer"></div>
 
 <script type="importmap">
     {
@@ -55,8 +52,7 @@
     import { TransformControls } from 'three/addons/controls/TransformControls.js';
 
     let scene, camera, renderer, orbit, transform;
-    let isDrawMode = false, lastBone = null, selectedObj = null;
-    const SNAP_DIST = 1.0; 
+    let isDrawMode = false, lastJoint = null, selectedObj = null;
 
     init();
 
@@ -64,7 +60,7 @@
         scene = new THREE.Scene();
         scene.background = new THREE.Color(0x111111);
         camera = new THREE.PerspectiveCamera(75, (window.innerWidth - 260) / window.innerHeight, 0.1, 1000);
-        camera.position.set(5, 5, 10);
+        camera.position.set(8, 8, 8);
 
         renderer = new THREE.WebGLRenderer({ antialias: true });
         renderer.setSize(window.innerWidth - 260, window.innerHeight);
@@ -75,92 +71,39 @@
 
         orbit = new OrbitControls(camera, renderer.domElement);
         transform = new TransformControls(camera, renderer.domElement);
-        
-        transform.addEventListener('dragging-changed', (e) => {
-            orbit.enabled = !e.value;
-            // ONLY SNAP if we are NOT in draw mode and just finished a drag
-            if (!e.value && !isDrawMode && selectedObj?.userData.isJoint) {
-                trySnap(selectedObj);
-            }
-        });
-
+        transform.addEventListener('dragging-changed', (e) => orbit.enabled = !e.value);
         scene.add(transform);
+
         renderer.domElement.addEventListener('pointerdown', onPointerDown);
         animate();
     }
 
-    function trySnap(dragged) {
-        let nearest = null;
-        let minDist = SNAP_DIST;
-        const dragPos = new THREE.Vector3().setFromMatrixPosition(dragged.matrixWorld);
-
-        scene.traverse((obj) => {
-            if (obj.userData.isJoint && obj !== dragged && !isChildOf(dragged, obj)) {
-                const objPos = new THREE.Vector3().setFromMatrixPosition(obj.matrixWorld);
-                const d = dragPos.distanceTo(objPos);
-                if (d < minDist) { minDist = d; nearest = obj; }
-            }
-        });
-
-        if (nearest) {
-            const worldPos = new THREE.Vector3().setFromMatrixPosition(dragged.matrixWorld);
-            nearest.add(dragged);
-            dragged.position.copy(nearest.worldToLocal(worldPos));
-            refreshBone(nearest, dragged);
-            showToast("Snapped to " + nearest.userData.name);
-            updateUI();
-        }
-    }
-
-    function isChildOf(parent, potentialChild) {
-        let node = potentialChild.parent;
-        while (node) { if (node === parent) return true; node = node.parent; }
-        return false;
-    }
-
-    function refreshBone(parent, child) {
-        const dist = child.position.length();
-        parent.lookAt(child.getWorldPosition(new THREE.Vector3()));
-        parent.rotateX(Math.PI/2);
-        parent.userData.bone.scale.set(1, dist, 1);
-        child.position.set(0, dist, 0); // Correct axial alignment
-        child.rotation.x = -Math.PI/2;
-    }
-
-    function addNode(pos) {
-        const group = new THREE.Group();
-        group.userData = { isJoint: true, name: 'J_' + (scene.children.length + 1) };
-        group.add(new THREE.Mesh(new THREE.SphereGeometry(0.15), new THREE.MeshStandardMaterial({color:0xffffff})));
-        
-        const bMesh = new THREE.Mesh(new THREE.CylinderGeometry(0.08, 0.08, 1), new THREE.MeshStandardMaterial({color:0x3b82f6}));
-        bMesh.geometry.translate(0, 0.5, 0);
-        bMesh.userData.isBone = true;
-        group.add(bMesh);
-        group.userData.bone = bMesh;
-
-        if (!lastBone) {
-            group.position.copy(pos);
-            scene.add(group);
-        } else {
-            const start = new THREE.Vector3().setFromMatrixPosition(lastBone.matrixWorld);
-            const dist = start.distanceTo(pos);
-            lastBone.add(group);
-            group.position.set(0, dist, 0); 
-            refreshBone(lastBone, group);
-        }
-        lastBone = group;
-        updateUI();
-    }
-
     function onPointerDown(e) {
-        if (isDrawMode) { 
+        if (isDrawMode) {
             const rect = renderer.domElement.getBoundingClientRect();
-            const vec = new THREE.Vector3(((e.clientX - rect.left) / rect.width)*2-1, -((e.clientY-rect.top)/rect.height)*2+1, 0.5).unproject(camera);
-            addNode(camera.position.clone().add(vec.sub(camera.position).normalize().multiplyScalar(10)));
-            return; 
+            const mouse = new THREE.Vector2(((e.clientX - rect.left) / rect.width) * 2 - 1, -((e.clientY - rect.top) / rect.height) * 2 + 1);
+            
+            // Plane projection for "Air" feel
+            const raycaster = new THREE.Raycaster();
+            raycaster.setFromCamera(mouse, camera);
+            
+            let targetPos = new THREE.Vector3();
+            if (lastJoint) {
+                // Project onto a plane facing the camera at the depth of the last joint
+                const lastWorldPos = new THREE.Vector3().setFromMatrixPosition(lastJoint.matrixWorld);
+                const plane = new THREE.Plane().setFromNormalAndCoplanarPoint(camera.getWorldDirection(new THREE.Vector3()).negate(), lastWorldPos);
+                raycaster.ray.intersectPlane(plane, targetPos);
+            } else {
+                // First joint goes 10 units in front of camera
+                targetPos = raycaster.ray.origin.clone().add(raycaster.ray.direction.clone().multiplyScalar(10));
+            }
+            addNode(targetPos);
+            return;
         }
+        
+        // Standard selection
         const rect = renderer.domElement.getBoundingClientRect();
-        const mouse = new THREE.Vector2(((e.clientX - rect.left) / rect.width)*2-1, -((e.clientY-rect.top)/rect.height)*2+1);
+        const mouse = new THREE.Vector2(((e.clientX - rect.left) / rect.width) * 2 - 1, -((e.clientY - rect.top) / rect.height) * 2 + 1);
         const ray = new THREE.Raycaster();
         ray.setFromCamera(mouse, camera);
         const hits = ray.intersectObjects(scene.children, true);
@@ -172,6 +115,43 @@
                 updateUI();
             }
         }
+    }
+
+    function addNode(pos) {
+        const group = new THREE.Group();
+        group.userData = { isJoint: true, name: 'J_' + (Math.floor(Math.random()*1000)) };
+        group.add(new THREE.Mesh(new THREE.SphereGeometry(0.15), new THREE.MeshStandardMaterial({color:0xffffff})));
+        
+        const bMesh = new THREE.Mesh(new THREE.CylinderGeometry(0.08, 0.08, 1), new THREE.MeshStandardMaterial({color:0x3b82f6}));
+        bMesh.geometry.translate(0, 0.5, 0);
+        bMesh.userData.isBone = true;
+        group.add(bMesh);
+        group.userData.bone = bMesh;
+
+        if (!lastJoint) {
+            group.position.copy(pos);
+            scene.add(group);
+        } else {
+            // Get World Positions
+            const start = new THREE.Vector3().setFromMatrixPosition(lastJoint.matrixWorld);
+            const dist = start.distanceTo(pos);
+            
+            // Parent first, then fix local transforms
+            lastJoint.add(group);
+            
+            // Point the parent at the new click point
+            lastJoint.lookAt(pos);
+            lastJoint.rotateX(Math.PI / 2);
+            
+            // The new joint is always at the tip of the cylinder (Y=length)
+            group.position.set(0, dist, 0);
+            group.rotation.set(-Math.PI / 2, 0, 0); // Correct the orientation for the next click
+            
+            // Scale the bone mesh to bridge the gap
+            lastJoint.userData.bone.scale.set(1, dist, 1);
+        }
+        lastJoint = group;
+        updateUI();
     }
 
     function updateUI() {
@@ -196,18 +176,12 @@
         return li;
     }
 
-    function showToast(msg) {
-        const t = document.getElementById('toast');
-        t.innerText = msg; t.style.display = 'block';
-        setTimeout(() => t.style.display = 'none', 1500);
-    }
-
     window.toggleDrawMode = () => {
         isDrawMode = !isDrawMode;
         orbit.enabled = !isDrawMode;
         document.getElementById('drawBtn').innerText = isDrawMode ? "Finish" : "Start Drawing";
         document.getElementById('drawBtn').classList.toggle('active-mode', isDrawMode);
-        if (isDrawMode) { lastBone = null; transform.detach(); }
+        if (isDrawMode) { lastJoint = null; transform.detach(); }
     };
 
     window.setGizmo = (m) => transform.setMode(m);
