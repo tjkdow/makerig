@@ -3,54 +3,48 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Web Rig Tool</title>
+    <title>SVG Rigging Tool</title>
     <style>
-        body { font-family: sans-serif; display: flex; margin: 0; height: 100vh; background: #1a1a1a; color: #eee; }
+        body { font-family: sans-serif; display: flex; margin: 0; height: 100vh; background: #1a1a1a; color: #eee; overflow: hidden; }
         
-        /* Sidebar Styles */
-        #sidebar { 
-            width: 300px; 
-            background: #252525; 
-            border-right: 1px solid #444; 
-            display: flex; 
-            flex-direction: column; 
-        }
+        #sidebar { width: 300px; background: #252525; border-right: 1px solid #444; display: flex; flex-direction: column; }
+        .section { padding: 15px; border-bottom: 1px solid #444; }
         
-        .controls { padding: 15px; border-bottom: 1px solid #444; display: flex; flex-direction: column; gap: 10px; }
-        
-        button { 
-            padding: 8px; 
-            cursor: pointer; 
-            background: #444; 
-            color: white; 
-            border: 1px solid #666; 
-            border-radius: 4px;
-        }
-        
+        button { padding: 8px; cursor: pointer; background: #444; color: white; border: 1px solid #666; border-radius: 4px; width: 100%; margin-bottom: 5px; }
         button:hover { background: #555; }
-        button:disabled { opacity: 0.5; cursor: not-allowed; }
-
-        /* Hierarchy Tree */
-        #hierarchy-container { padding: 15px; overflow-y: auto; flex-grow: 1; }
-        ul { list-style-type: none; padding-left: 20px; }
-        li { margin: 4px 0; cursor: pointer; padding: 4px; border-radius: 3px; position: relative; }
-        li::before { content: '🦴'; margin-right: 5px; font-size: 0.8em; }
         
-        .selected { background: #3b82f6 !important; color: white; }
-        .joint-item:hover { background: #333; }
+        input[type="range"] { width: 100%; }
+        
+        #hierarchy-container { flex-grow: 1; overflow-y: auto; padding: 15px; }
+        ul { list-style-type: none; padding-left: 15px; }
+        li { cursor: pointer; padding: 4px; border-radius: 3px; font-size: 14px; }
+        .selected { background: #3b82f6; }
 
-        /* Canvas Area (Placeholder) */
-        #viewport { flex-grow: 1; display: flex; align-items: center; justify-content: center; color: #666; }
+        #viewport { flex-grow: 1; position: relative; background: #111; display: flex; align-items: center; justify-content: center; }
+        svg { width: 100%; height: 100%; }
+        
+        .bone-line { stroke: #aaa; stroke-linecap: round; transition: stroke 0.2s; }
+        .bone-line.active { stroke: #3b82f6; stroke-width: inherit; filter: drop-shadow(0 0 5px #3b82f6); }
+        .joint-dot { fill: #fff; cursor: pointer; }
     </style>
 </head>
 <body>
 
     <div id="sidebar">
-        <div class="controls">
+        <div class="section">
             <strong>Rig Controls</strong>
-            <button onclick="addRootBone()">Add Root Bone</button>
-            <button id="addChildBtn" onclick="addChildBone()" disabled>Add Child to Selected</button>
-            <small id="selectionLabel">Selected: None</small>
+            <button onclick="addBone(true)">Add Root Bone</button>
+            <button id="addChildBtn" onclick="addBone(false)" disabled>Add Child Bone</button>
+        </div>
+
+        <div id="prop-panel" class="section" style="display:none;">
+            <strong>Bone Properties</strong>
+            <label>Length</label>
+            <input type="range" id="lenRange" min="10" max="200" oninput="updateBoneProp('length', this.value)">
+            <label>Thickness</label>
+            <input type="range" id="thickRange" min="1" max="20" oninput="updateBoneProp('thickness', this.value)">
+            <label>Rotation</label>
+            <input type="range" id="rotRange" min="0" max="360" oninput="updateBoneProp('angle', this.value)">
         </div>
         
         <div id="hierarchy-container">
@@ -60,81 +54,127 @@
     </div>
 
     <div id="viewport">
-        <p>3D Viewport Placeholder</p>
+        <svg id="rig-svg">
+            <g id="bone-group"></g>
+        </svg>
     </div>
 
     <script>
         let skeleton = [];
-        let selectedId = null;
-        let boneCount = 0;
+        let selectedBone = null;
 
-        function addRootBone() {
-            const name = prompt("Bone Name:", `root_${boneCount++}`);
+        function addBone(isRoot) {
+            const name = prompt("Name:", isRoot ? "root" : "joint");
             if (!name) return;
-            
-            skeleton.push({ id: Date.now(), name: name, children: [] });
-            renderHierarchy();
+
+            const newBone = {
+                id: Date.now(),
+                name: name,
+                length: 50,
+                thickness: 5,
+                angle: isRoot ? 0 : 45, // default angle
+                children: []
+            };
+
+            if (isRoot) {
+                skeleton.push(newBone);
+            } else if (selectedBone) {
+                selectedBone.children.push(newBone);
+            }
+
+            selectBone(newBone);
+            refreshAll();
         }
 
-        function addChildBone() {
-            if (!selectedId) return;
-            
-            const name = prompt("Child Bone Name:", `joint_${boneCount++}`);
-            if (!name) return;
-
-            const parent = findBoneById(skeleton, selectedId);
-            if (parent) {
-                parent.children.push({ id: Date.now(), name: name, children: [] });
-                renderHierarchy();
+        function updateBoneProp(prop, value) {
+            if (selectedBone) {
+                selectedBone[prop] = parseFloat(value);
+                refreshAll();
             }
         }
 
-        // Helper to recursively find a bone
-        function findBoneById(bones, id) {
-            for (let bone of bones) {
-                if (bone.id === id) return bone;
-                if (bone.children.length > 0) {
-                    const found = findBoneById(bone.children, id);
-                    if (found) return found;
-                }
-            }
-            return null;
-        }
-
-        function selectBone(id, name) {
-            selectedId = id;
-            document.getElementById('selectionLabel').innerText = `Selected: ${name}`;
+        function selectBone(bone) {
+            selectedBone = bone;
             document.getElementById('addChildBtn').disabled = false;
-            renderHierarchy();
+            document.getElementById('prop-panel').style.display = 'block';
+            
+            // Sync sliders
+            document.getElementById('lenRange').value = bone.length;
+            document.getElementById('thickRange').value = bone.thickness;
+            document.getElementById('rotRange').value = bone.angle;
+            
+            refreshAll();
         }
 
+        function refreshAll() {
+            renderHierarchy();
+            renderViewport();
+        }
+
+        // --- Viewport Rendering (SVG) ---
+        function renderViewport() {
+            const group = document.getElementById('bone-group');
+            group.innerHTML = '';
+            
+            // Start roots at center of screen
+            const startX = window.innerWidth / 2 - 150; 
+            const startY = window.innerHeight / 2;
+
+            skeleton.forEach(root => {
+                drawBoneRecursive(group, root, startX, startY, 0);
+            });
+        }
+
+        function drawBoneRecursive(group, bone, x, y, parentAngle) {
+            const totalAngle = parentAngle + bone.angle;
+            const rad = (totalAngle - 90) * (Math.PI / 180);
+            const x2 = x + bone.length * Math.cos(rad);
+            const y2 = y + bone.length * Math.sin(rad);
+
+            // Draw Bone Line
+            const line = document.createElementNS("http://www.w3.org/2000/svg", "line");
+            line.setAttribute("x1", x);
+            line.setAttribute("y1", y);
+            line.setAttribute("x2", x2);
+            line.setAttribute("y2", y2);
+            line.setAttribute("stroke-width", bone.thickness);
+            line.classList.add("bone-line");
+            if (selectedBone && selectedBone.id === bone.id) line.classList.add("active");
+            
+            line.onclick = (e) => { e.stopPropagation(); selectBone(bone); };
+            group.appendChild(line);
+
+            // Draw Joint
+            const circle = document.createElementNS("http://www.w3.org/2000/svg", "circle");
+            circle.setAttribute("cx", x);
+            circle.setAttribute("cy", y);
+            circle.setAttribute("r", 4);
+            circle.classList.add("joint-dot");
+            group.appendChild(circle);
+
+            bone.children.forEach(child => {
+                drawBoneRecursive(group, child, x2, y2, totalAngle);
+            });
+        }
+
+        // --- Hierarchy Rendering ---
         function renderHierarchy() {
             const container = document.getElementById('tree-root');
             container.innerHTML = '';
             const ul = document.createElement('ul');
-            
-            skeleton.forEach(bone => {
-                ul.appendChild(createTreeItem(bone));
-            });
-            
+            skeleton.forEach(bone => ul.appendChild(createTreeItem(bone)));
             container.appendChild(ul);
         }
 
         function createTreeItem(bone) {
             const li = document.createElement('li');
-            li.className = 'joint-item' + (selectedId === bone.id ? ' selected' : '');
             li.innerText = bone.name;
-            
-            li.onclick = (e) => {
-                e.stopPropagation();
-                selectBone(bone.id, bone.name);
-            };
+            if (selectedBone && selectedBone.id === bone.id) li.classList.add('selected');
+            li.onclick = (e) => { e.stopPropagation(); selectBone(bone); };
 
             if (bone.children.length > 0) {
                 const subUl = document.createElement('ul');
-                bone.children.forEach(child => {
-                    subUl.appendChild(createTreeItem(child));
-                });
+                bone.children.forEach(child => subUl.appendChild(createTreeItem(child)));
                 li.appendChild(subUl);
             }
             return li;
