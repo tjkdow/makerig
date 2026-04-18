@@ -2,13 +2,15 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <title>Flat-Link Rigging</title>
+    <title>Flat-Link Snap Rig</title>
     <style>
         body { margin: 0; display: flex; height: 100vh; background: #111; color: #eee; font-family: sans-serif; overflow: hidden; }
         #sidebar { width: 260px; background: #1a1a1a; border-right: 1px solid #333; padding: 15px; z-index: 10; }
-        button { width: 100%; padding: 10px; margin: 5px 0; cursor: pointer; background: #2a2a2a; color: white; border: 1px solid #444; border-radius: 4px; }
-        .active { background: #3b82f6 !important; }
+        button { width: 100%; padding: 10px; margin: 5px 0; cursor: pointer; background: #2a2a2a; color: white; border: 1px solid #444; border-radius: 4px; font-weight: bold; }
+        .active { background: #3b82f6 !important; border-color: #fff; }
+        .snap-on { color: #4ade80; border-color: #4ade80; }
         #viewer { flex-grow: 1; position: relative; }
+        .hint { font-size: 11px; color: #888; margin-top: 20px; line-height: 1.4; }
     </style>
 </head>
 <body>
@@ -16,13 +18,15 @@
 <div id="sidebar">
     <h3>Rig Controller</h3>
     <button id="drawBtn" onclick="toggleDraw()">Start Drawing</button>
+    <button id="snapBtn" onclick="toggleSnap()" class="snap-on">Snap: ON</button>
     <button id="moveBtn" onclick="setMode('translate')" class="active">Move Joints</button>
     <button style="background:#4b1a1a" onclick="deleteJoint()">Delete Selected</button>
-    <p style="font-size: 11px; color: #888; margin-top: 20px;">
-        • Move Joints: Stretches links.<br>
-        • Click Bone: Selects the "Start" joint.<br>
-        • Drawing: Click in air to extend chain.
-    </p>
+    
+    <div class="hint">
+        • <b>Snap</b>: Release a joint near another to merge their positions.<br>
+        • <b>Bones</b>: Clicking a bone selects its start joint.<br>
+        • <b>Flat Logic</b>: Moving one joint stretches the bone without moving the neighbor.
+    </div>
 </div>
 <div id="viewer"></div>
 
@@ -41,8 +45,8 @@
     import { TransformControls } from 'three/addons/controls/TransformControls.js';
 
     let scene, camera, renderer, orbit, transform;
-    let isDrawing = false, lastJoint = null, selectedJoint = null;
-    let joints = []; // Store flat list of joints
+    let isDrawing = false, isSnapEnabled = true, lastJoint = null, selectedJoint = null;
+    const SNAP_THRESHOLD = 0.6; 
 
     init();
 
@@ -63,15 +67,43 @@
         transform = new TransformControls(camera, renderer.domElement);
         
         // --- LIVE BONE UPDATE ---
-        transform.addEventListener('change', () => {
-            updateAllBones();
+        transform.addEventListener('change', updateAllBones);
+
+        transform.addEventListener('dragging-changed', (e) => {
+            orbit.enabled = !e.value;
+            // When dragging stops, try to snap
+            if (!e.value && isSnapEnabled && selectedJoint) {
+                trySnap(selectedJoint);
+            }
         });
 
-        transform.addEventListener('dragging-changed', (e) => orbit.enabled = !e.value);
         scene.add(transform);
-
         renderer.domElement.addEventListener('pointerdown', onPointerDown);
         animate();
+    }
+
+    function trySnap(dragged) {
+        let nearest = null;
+        let minDist = SNAP_THRESHOLD;
+
+        scene.traverse(obj => {
+            if (obj.userData.isJoint && obj !== dragged) {
+                const dist = dragged.position.distanceTo(obj.position);
+                if (dist < minDist) {
+                    minDist = dist;
+                    nearest = obj;
+                }
+            }
+        });
+
+        if (nearest) {
+            // Hard snap the position
+            dragged.position.copy(nearest.position);
+            updateAllBones();
+            
+            // Visual feedback: brief flash or log
+            console.log("Snapped to " + nearest.uuid);
+        }
     }
 
     function onPointerDown(e) {
@@ -89,7 +121,6 @@
         if (hits.length > 0) {
             const hit = hits.find(h => h.object.userData.isJoint || h.object.userData.isBone);
             if (hit) {
-                // If bone is clicked, select its logical parent joint
                 selectedJoint = hit.object.userData.isBone ? hit.object.userData.parentJoint : hit.object;
                 transform.attach(selectedJoint);
             }
@@ -116,9 +147,7 @@
         const joint = new THREE.Mesh(new THREE.SphereGeometry(0.12), new THREE.MeshStandardMaterial({color: 0xffffff}));
         joint.position.copy(pos);
         joint.userData.isJoint = true;
-        joint.userData.parentJoint = lastJoint; // Logical link
         scene.add(joint);
-        joints.push(joint);
 
         if (lastJoint) {
             createBone(lastJoint, joint);
@@ -130,13 +159,12 @@
 
     function createBone(pJoint, cJoint) {
         const geo = new THREE.CylinderGeometry(0.05, 0.05, 1);
-        geo.translate(0, 0.5, 0); // Origin at bottom
+        geo.translate(0, 0.5, 0); 
         const bone = new THREE.Mesh(geo, new THREE.MeshStandardMaterial({color: 0x3b82f6}));
         bone.userData.isBone = true;
         bone.userData.parentJoint = pJoint;
         bone.userData.childJoint = cJoint;
         scene.add(bone);
-        pJoint.userData.outBone = bone; // Link the bone to the parent for easy finding
     }
 
     function updateAllBones() {
@@ -144,12 +172,13 @@
             if (obj.userData.isBone) {
                 const p = obj.userData.parentJoint;
                 const c = obj.userData.childJoint;
+                if (!p || !c) return;
                 
                 const dist = p.position.distanceTo(c.position);
                 obj.position.copy(p.position);
                 obj.lookAt(c.position);
                 obj.rotateX(Math.PI / 2);
-                obj.scale.set(1, dist, 1);
+                obj.scale.set(1, Math.max(dist, 0.001), 1);
             }
         });
     }
@@ -161,23 +190,29 @@
         document.getElementById('drawBtn').classList.toggle('active', isDrawing);
     };
 
+    window.toggleSnap = () => {
+        isSnapEnabled = !isSnapEnabled;
+        const btn = document.getElementById('snapBtn');
+        btn.innerText = isSnapEnabled ? "Snap: ON" : "Snap: OFF";
+        btn.classList.toggle('snap-on', isSnapEnabled);
+    };
+
     window.setMode = (m) => {
         transform.setMode(m);
-        document.getElementById('moveBtn').classList.add('active');
     };
 
     window.deleteJoint = () => {
         if (!selectedJoint) return;
-        // Clean up bones linked to this joint
-        const bonesToRemove = [];
+        const toDelete = [];
         scene.traverse(obj => {
-            if (obj.userData.isBone && (obj.userData.parentJoint === selectedJoint || obj.userData.childJoint === selectedObj)) {
-                bonesToRemove.push(obj);
+            if (obj.userData.isBone && (obj.userData.parentJoint === selectedJoint || obj.userData.childJoint === selectedJoint)) {
+                toDelete.push(obj);
             }
         });
-        bonesToRemove.forEach(b => b.removeFromParent());
+        toDelete.forEach(b => b.removeFromParent());
         selectedJoint.removeFromParent();
         transform.detach();
+        selectedJoint = null;
         updateAllBones();
     };
 
