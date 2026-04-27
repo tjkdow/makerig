@@ -2,26 +2,25 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <title>Symmetry Rigging Tool</title>
+    <title>Symmetry Rig - Fixed Delete</title>
     <style>
         body { margin: 0; display: flex; height: 100vh; background: #111; color: #eee; font-family: sans-serif; overflow: hidden; }
         #sidebar { width: 280px; background: #1a1a1a; border-right: 1px solid #333; padding: 15px; z-index: 10; display: flex; flex-direction: column; overflow-y: auto; }
         button { width: 100%; padding: 10px; margin: 5px 0; cursor: pointer; background: #2a2a2a; color: white; border: 1px solid #444; border-radius: 4px; font-weight: bold; font-size: 12px; }
         .active { background: #3b82f6 !important; border-color: #fff; }
         .control-group { margin: 10px 0; padding: 12px; background: #222; border-radius: 6px; border: 1px solid #333; }
-        label { display: block; font-size: 11px; margin-bottom: 8px; color: #aaa; text-transform: uppercase; letter-spacing: 0.5px; }
+        label { display: block; font-size: 11px; margin-bottom: 8px; color: #aaa; text-transform: uppercase; }
         input[type="range"] { width: 100%; cursor: pointer; margin-bottom: 10px; }
         .toggle-row { display: flex; gap: 4px; margin-top: 5px; }
         .toggle-row button { padding: 6px; font-size: 10px; flex: 1; }
         #viewer { flex-grow: 1; position: relative; }
-        .hint { font-size: 11px; color: #666; margin-top: auto; line-height: 1.4; padding: 10px; background: #151515; border-radius: 4px; }
+        .hint { font-size: 11px; color: #666; margin-top: auto; padding: 10px; background: #151515; border-radius: 4px; }
     </style>
 </head>
 <body>
 
 <div id="sidebar">
     <h3>Rig Controller</h3>
-    
     <button id="drawBtn" onclick="toggleDraw()">Start Drawing</button>
     <button id="moveBtn" onclick="setMode('translate')" class="active">Move Joints</button>
 
@@ -39,13 +38,12 @@
     <div class="control-group">
         <label>Snap Intensity: <span id="snapVal">0.6</span></label>
         <input type="range" id="snapSlider" min="0.1" max="2.0" step="0.1" value="0.6" oninput="updateSnapDist(this.value)">
-        <button id="snapBtn" onclick="toggleSnap()" class="active">Snap: ON</button>
     </div>
 
-    <button style="background:#4b1a1a; margin-top:10px;" onclick="deleteJoint()">Delete Selected</button>
+    <button style="background:#4b1a1a; margin-top:10px; border-color: #ff4444;" onclick="deleteJoint()">DELETE SELECTED</button>
     
     <div class="hint">
-        <b>Symmetry:</b> Creates mirrored joints across the plane. Moving one updates its partner automatically.
+        <b>Tip:</b> Deleting a joint also removes its mirror partner and all connected bones.
     </div>
 </div>
 <div id="viewer"></div>
@@ -90,15 +88,13 @@
         transform = new TransformControls(camera, renderer.domElement);
         mirrorTransform = new TransformControls(camera, renderer.domElement);
 
-        // --- MIRROR PLANE SETUP ---
         const planeGeo = new THREE.PlaneGeometry(10, 10);
         const planeMat = new THREE.MeshBasicMaterial({ color: 0x3b82f6, transparent: true, opacity: 0.15, side: THREE.DoubleSide });
         mirrorPlane = new THREE.Mesh(planeGeo, planeMat);
         mirrorPlane.visible = false;
-        mirrorPlane.rotation.y = Math.PI / 2; // Default X-Plane
+        mirrorPlane.rotation.y = Math.PI / 2;
         scene.add(mirrorPlane);
 
-        // --- EVENTS ---
         transform.addEventListener('change', () => {
             if (transform.object && transform.object.userData.isJoint) {
                 const joint = transform.object;
@@ -119,7 +115,7 @@
         scene.add(transform, mirrorTransform);
         renderer.domElement.addEventListener('pointerdown', onPointerDown);
 
-        // --- UI HOOKS ---
+        // --- GLOBAL EXPORTS ---
         window.setSymAxis = (axis) => {
             symAxis = axis;
             ['X', 'Y', 'Z'].forEach(a => document.getElementById('sym' + a).classList.remove('active'));
@@ -137,11 +133,33 @@
         };
 
         window.toggleMirrorDrag = () => {
-            if (mirrorTransform.object) {
-                mirrorTransform.detach();
-            } else {
-                mirrorTransform.attach(mirrorPlane);
+            if (mirrorTransform.object) mirrorTransform.detach();
+            else mirrorTransform.attach(mirrorPlane);
+        };
+
+        window.deleteJoint = () => {
+            if (!selectedJoint) return;
+            
+            const partners = [selectedJoint];
+            if (selectedJoint.userData.mirrorPartner) {
+                partners.push(selectedJoint.userData.mirrorPartner);
             }
+
+            partners.forEach(j => {
+                // Find and remove all bones connected to this specific joint
+                const bonesToRemove = [];
+                scene.traverse(obj => {
+                    if (obj.userData.isBone && (obj.userData.parentJoint === j || obj.userData.childJoint === j)) {
+                        bonesToRemove.push(obj);
+                    }
+                });
+                bonesToRemove.forEach(b => b.removeFromParent());
+                j.removeFromParent();
+            });
+
+            transform.detach();
+            selectedJoint = null;
+            updateAllBones();
         };
 
         animate();
@@ -149,8 +167,7 @@
 
     function reflectJoint(source, target) {
         const localPos = mirrorPlane.worldToLocal(source.position.clone());
-        if (symAxis === 'X') localPos.z *= -1; // Flip across the plane's local Z (which is the world X axis of symmetry)
-        else localPos.z *= -1; // General logic for our plane orientation
+        localPos.z *= -1; 
         target.position.copy(mirrorPlane.localToWorld(localPos));
     }
 
@@ -189,12 +206,10 @@
         if (lastJoint) spawnBone(lastJoint, j1);
 
         if (isSymmetryEnabled) {
-            const mirrorPos = pos.clone(); // Placeholder, reflected immediately
-            const j2 = spawnJoint(mirrorPos);
+            const j2 = spawnJoint(pos.clone());
             j1.userData.mirrorPartner = j2;
             j2.userData.mirrorPartner = j1;
             reflectJoint(j1, j2);
-            
             if (lastMirrorJoint) spawnBone(lastMirrorJoint, j2);
             lastMirrorJoint = j2;
         }
@@ -226,7 +241,7 @@
             if (obj.userData.isBone) {
                 const p = obj.userData.parentJoint;
                 const c = obj.userData.childJoint;
-                if (p && c) {
+                if (p && c && p.parent && c.parent) { // Ensure endpoints still exist
                     const dist = p.position.distanceTo(c.position);
                     obj.position.copy(p.position);
                     obj.lookAt(c.position);
@@ -263,7 +278,6 @@
 
     window.setMode = (m) => transform.setMode(m);
     window.updateSnapDist = (v) => { snapThreshold = parseFloat(v); document.getElementById('snapVal').innerText = v; };
-    window.deleteJoint = () => { /* Similar to previous, deletes selected + partner if exists */ };
 
     function animate() { requestAnimationFrame(animate); renderer.render(scene, camera); }
 </script>
