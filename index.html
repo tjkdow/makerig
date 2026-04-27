@@ -2,19 +2,23 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <title>Symmetry Rig - Fixed Delete</title>
+    <title>Symmetry Rig - Live Hierarchy</title>
     <style>
         body { margin: 0; display: flex; height: 100vh; background: #111; color: #eee; font-family: sans-serif; overflow: hidden; }
-        #sidebar { width: 280px; background: #1a1a1a; border-right: 1px solid #333; padding: 15px; z-index: 10; display: flex; flex-direction: column; overflow-y: auto; }
+        #sidebar { width: 300px; background: #1a1a1a; border-right: 1px solid #333; padding: 15px; z-index: 10; display: flex; flex-direction: column; overflow-y: auto; }
         button { width: 100%; padding: 10px; margin: 5px 0; cursor: pointer; background: #2a2a2a; color: white; border: 1px solid #444; border-radius: 4px; font-weight: bold; font-size: 12px; }
         .active { background: #3b82f6 !important; border-color: #fff; }
         .control-group { margin: 10px 0; padding: 12px; background: #222; border-radius: 6px; border: 1px solid #333; }
         label { display: block; font-size: 11px; margin-bottom: 8px; color: #aaa; text-transform: uppercase; }
-        input[type="range"] { width: 100%; cursor: pointer; margin-bottom: 10px; }
-        .toggle-row { display: flex; gap: 4px; margin-top: 5px; }
-        .toggle-row button { padding: 6px; font-size: 10px; flex: 1; }
         #viewer { flex-grow: 1; position: relative; }
-        .hint { font-size: 11px; color: #666; margin-top: auto; padding: 10px; background: #151515; border-radius: 4px; }
+        
+        /* Hierarchy Styles */
+        #hierarchy-container { flex-grow: 1; overflow-y: auto; margin-top: 10px; border-top: 1px solid #333; padding-top: 10px; }
+        .tree-root { list-style: none; padding-left: 10px; font-size: 12px; }
+        .tree-item { cursor: pointer; padding: 4px; border-radius: 3px; margin: 2px 0; color: #bbb; transition: background 0.2s; }
+        .tree-item:hover { background: #333; color: #fff; }
+        .tree-item.selected { background: #3b82f6; color: white; }
+        .tree-children { padding-left: 15px; border-left: 1px solid #444; }
     </style>
 </head>
 <body>
@@ -25,27 +29,19 @@
     <button id="moveBtn" onclick="setMode('translate')" class="active">Move Joints</button>
 
     <div class="control-group">
-        <label>Symmetry Settings</label>
+        <label>Symmetry</label>
         <button id="symToggle" onclick="toggleSymmetry()">Symmetry: OFF</button>
-        <div class="toggle-row">
-            <button id="symX" onclick="setSymAxis('X')" class="active">X-Plane</button>
-            <button id="symY" onclick="setSymAxis('Y')">Y-Plane</button>
-            <button id="symZ" onclick="setSymAxis('Z')">Z-Plane</button>
-        </div>
-        <button id="dragSymBtn" onclick="toggleMirrorDrag()" style="margin-top:8px; font-size:10px; background:#333;">Drag Mirror Plane</button>
+        <button id="dragSymBtn" onclick="toggleMirrorDrag()" style="margin-top:8px; font-size:10px;">Drag Mirror Plane</button>
     </div>
 
-    <div class="control-group">
-        <label>Snap Intensity: <span id="snapVal">0.6</span></label>
-        <input type="range" id="snapSlider" min="0.1" max="2.0" step="0.1" value="0.6" oninput="updateSnapDist(this.value)">
-    </div>
-
-    <button style="background:#4b1a1a; margin-top:10px; border-color: #ff4444;" onclick="deleteJoint()">DELETE SELECTED</button>
+    <button style="background:#4b1a1a; border-color: #ff4444;" onclick="deleteJoint()">DELETE SELECTED</button>
     
-    <div class="hint">
-        <b>Tip:</b> Deleting a joint also removes its mirror partner and all connected bones.
+    <div id="hierarchy-container">
+        <label>Live Hierarchy</label>
+        <div id="tree-view"></div>
     </div>
 </div>
+
 <div id="viewer"></div>
 
 <script type="importmap">
@@ -63,10 +59,8 @@
     import { TransformControls } from 'three/addons/controls/TransformControls.js';
 
     let scene, camera, renderer, orbit, transform, mirrorTransform;
-    let isDrawing = false, isSnapEnabled = true, isSymmetryEnabled = false;
+    let isDrawing = false, isSymmetryEnabled = false;
     let selectedJoint = null, lastJoint = null, lastMirrorJoint = null;
-    let snapThreshold = 0.6;
-    let symAxis = 'X';
     let mirrorPlane;
 
     init();
@@ -74,11 +68,11 @@
     function init() {
         scene = new THREE.Scene();
         scene.background = new THREE.Color(0x111111);
-        camera = new THREE.PerspectiveCamera(75, (window.innerWidth - 280) / window.innerHeight, 0.1, 1000);
+        camera = new THREE.PerspectiveCamera(75, (window.innerWidth - 300) / window.innerHeight, 0.1, 1000);
         camera.position.set(8, 8, 8);
 
         renderer = new THREE.WebGLRenderer({ antialias: true });
-        renderer.setSize(window.innerWidth - 280, window.innerHeight);
+        renderer.setSize(window.innerWidth - 300, window.innerHeight);
         document.getElementById('viewer').appendChild(renderer.domElement);
 
         scene.add(new THREE.GridHelper(20, 20, 0x333333, 0x222222));
@@ -88,6 +82,7 @@
         transform = new TransformControls(camera, renderer.domElement);
         mirrorTransform = new TransformControls(camera, renderer.domElement);
 
+        // Mirror Plane
         const planeGeo = new THREE.PlaneGeometry(10, 10);
         const planeMat = new THREE.MeshBasicMaterial({ color: 0x3b82f6, transparent: true, opacity: 0.15, side: THREE.DoubleSide });
         mirrorPlane = new THREE.Mesh(planeGeo, planeMat);
@@ -97,34 +92,20 @@
 
         transform.addEventListener('change', () => {
             if (transform.object && transform.object.userData.isJoint) {
-                const joint = transform.object;
-                if (isSymmetryEnabled && joint.userData.mirrorPartner) {
-                    reflectJoint(joint, joint.userData.mirrorPartner);
+                if (isSymmetryEnabled && transform.object.userData.mirrorPartner) {
+                    reflectJoint(transform.object, transform.object.userData.mirrorPartner);
                 }
                 updateAllBones();
             }
         });
 
-        transform.addEventListener('dragging-changed', (e) => {
-            orbit.enabled = !e.value;
-            if (!e.value && isSnapEnabled && selectedJoint) trySnap(selectedJoint);
-        });
-
+        transform.addEventListener('dragging-changed', (e) => orbit.enabled = !e.value);
         mirrorTransform.addEventListener('dragging-changed', (e) => orbit.enabled = !e.value);
 
         scene.add(transform, mirrorTransform);
         renderer.domElement.addEventListener('pointerdown', onPointerDown);
 
-        // --- GLOBAL EXPORTS ---
-        window.setSymAxis = (axis) => {
-            symAxis = axis;
-            ['X', 'Y', 'Z'].forEach(a => document.getElementById('sym' + a).classList.remove('active'));
-            document.getElementById('sym' + axis).classList.add('active');
-            if (axis === 'X') mirrorPlane.rotation.set(0, Math.PI/2, 0);
-            if (axis === 'Y') mirrorPlane.rotation.set(Math.PI/2, 0, 0);
-            if (axis === 'Z') mirrorPlane.rotation.set(0, 0, 0);
-        };
-
+        // UI Exports
         window.toggleSymmetry = () => {
             isSymmetryEnabled = !isSymmetryEnabled;
             mirrorPlane.visible = isSymmetryEnabled;
@@ -139,19 +120,13 @@
 
         window.deleteJoint = () => {
             if (!selectedJoint) return;
-            
             const partners = [selectedJoint];
-            if (selectedJoint.userData.mirrorPartner) {
-                partners.push(selectedJoint.userData.mirrorPartner);
-            }
+            if (selectedJoint.userData.mirrorPartner) partners.push(selectedJoint.userData.mirrorPartner);
 
             partners.forEach(j => {
-                // Find and remove all bones connected to this specific joint
                 const bonesToRemove = [];
                 scene.traverse(obj => {
-                    if (obj.userData.isBone && (obj.userData.parentJoint === j || obj.userData.childJoint === j)) {
-                        bonesToRemove.push(obj);
-                    }
+                    if (obj.userData.isBone && (obj.userData.parentJoint === j || obj.userData.childJoint === j)) bonesToRemove.push(obj);
                 });
                 bonesToRemove.forEach(b => b.removeFromParent());
                 j.removeFromParent();
@@ -160,6 +135,7 @@
             transform.detach();
             selectedJoint = null;
             updateAllBones();
+            refreshHierarchy();
         };
 
         animate();
@@ -181,14 +157,21 @@
         if (hits.length > 0) {
             const hit = hits.find(h => h.object.userData.isJoint || h.object.userData.isBone);
             if (hit) {
-                selectedJoint = hit.object.userData.isBone ? hit.object.userData.parentJoint : hit.object;
-                transform.attach(selectedJoint);
-                mirrorTransform.detach();
+                const target = hit.object.userData.isBone ? hit.object.userData.parentJoint : hit.object;
+                selectJoint(target);
             }
         } else {
             transform.detach();
             selectedJoint = null;
+            refreshHierarchy();
         }
+    }
+
+    function selectJoint(joint) {
+        selectedJoint = joint;
+        transform.attach(selectedJoint);
+        mirrorTransform.detach();
+        refreshHierarchy();
     }
 
     function createJointChain(e) {
@@ -202,11 +185,11 @@
         const plane = new THREE.Plane().setFromNormalAndCoplanarPoint(camera.getWorldDirection(new THREE.Vector3()).negate(), refPos);
         ray.ray.intersectPlane(plane, pos);
 
-        const j1 = spawnJoint(pos);
+        const j1 = spawnJoint(pos, "Joint_" + Math.floor(Math.random()*1000));
         if (lastJoint) spawnBone(lastJoint, j1);
 
         if (isSymmetryEnabled) {
-            const j2 = spawnJoint(pos.clone());
+            const j2 = spawnJoint(pos.clone(), j1.userData.name + "_M");
             j1.userData.mirrorPartner = j2;
             j2.userData.mirrorPartner = j1;
             reflectJoint(j1, j2);
@@ -216,12 +199,13 @@
 
         lastJoint = j1;
         updateAllBones();
+        refreshHierarchy();
     }
 
-    function spawnJoint(pos) {
+    function spawnJoint(pos, name) {
         const j = new THREE.Mesh(new THREE.SphereGeometry(0.12), new THREE.MeshStandardMaterial({color: 0xffffff}));
         j.position.copy(pos);
-        j.userData.isJoint = true;
+        j.userData = { isJoint: true, name: name, parentJoint: null };
         scene.add(j);
         return j;
     }
@@ -233,6 +217,7 @@
         bone.userData.isBone = true;
         bone.userData.parentJoint = p;
         bone.userData.childJoint = c;
+        c.userData.parentJoint = p; // Logical link
         scene.add(bone);
     }
 
@@ -241,7 +226,7 @@
             if (obj.userData.isBone) {
                 const p = obj.userData.parentJoint;
                 const c = obj.userData.childJoint;
-                if (p && c && p.parent && c.parent) { // Ensure endpoints still exist
+                if (p && c && p.parent && c.parent) {
                     const dist = p.position.distanceTo(c.position);
                     obj.position.copy(p.position);
                     obj.lookAt(c.position);
@@ -252,20 +237,41 @@
         });
     }
 
-    function trySnap(dragged) {
-        let nearest = null;
-        let minDist = snapThreshold;
-        scene.traverse(obj => {
-            if (obj.userData.isJoint && obj !== dragged) {
-                const d = dragged.position.distanceTo(obj.position);
-                if (d < minDist) { minDist = d; nearest = obj; }
-            }
+    function refreshHierarchy() {
+        const container = document.getElementById('tree-view');
+        container.innerHTML = '';
+        
+        const allJoints = [];
+        scene.traverse(obj => { if(obj.userData.isJoint) allJoints.push(obj); });
+
+        // Find "Root" joints (those without a logical parentJoint)
+        const roots = allJoints.filter(j => !j.userData.parentJoint);
+        
+        const ul = document.createElement('ul');
+        ul.className = 'tree-root';
+        roots.forEach(root => {
+            ul.appendChild(renderNode(root, allJoints));
         });
-        if (nearest) {
-            dragged.position.copy(nearest.position);
-            if (dragged.userData.mirrorPartner) reflectJoint(dragged, dragged.userData.mirrorPartner);
-            updateAllBones();
+        container.appendChild(ul);
+    }
+
+    function renderNode(joint, allJoints) {
+        const li = document.createElement('li');
+        const div = document.createElement('div');
+        div.className = 'tree-item' + (selectedJoint === joint ? ' selected' : '');
+        div.innerText = "📍 " + (joint.userData.name || "Joint");
+        div.onclick = (e) => { e.stopPropagation(); selectJoint(joint); };
+        li.appendChild(div);
+
+        // Find logical children
+        const children = allJoints.filter(j => j.userData.parentJoint === joint);
+        if (children.length > 0) {
+            const childUl = document.createElement('ul');
+            childUl.className = 'tree-children';
+            children.forEach(c => childUl.appendChild(renderNode(c, allJoints)));
+            li.appendChild(childUl);
         }
+        return li;
     }
 
     window.toggleDraw = () => {
@@ -277,8 +283,6 @@
     };
 
     window.setMode = (m) => transform.setMode(m);
-    window.updateSnapDist = (v) => { snapThreshold = parseFloat(v); document.getElementById('snapVal').innerText = v; };
-
     function animate() { requestAnimationFrame(animate); renderer.render(scene, camera); }
 </script>
 </body>
